@@ -22,11 +22,12 @@ import Animated, {
   withSpring,
   withTiming,
   interpolate,
+  useAnimatedProps,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { Send, X, Heart, MessageCircle, MoveHorizontal as MoreHorizontal, CreditCard as Edit3, Trash2, Reply, ChevronRight } from 'lucide-react-native';
-import { useComments } from '../contexts/CommentContext';
-import { Comment } from '../types/comments';
+import { dataService } from '../services/dataService';
+import { Comment } from '../types';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -61,6 +62,8 @@ const CommentItem: React.FC<{
   };
 
   const handleUserPress = () => {
+    if (!comment.user) return;
+    
     if (comment.user.id === currentUserId) {
       Alert.alert(
         'Your Profile',
@@ -99,6 +102,8 @@ const CommentItem: React.FC<{
     );
   };
 
+
+
   const handleReply = () => {
     setShowActions(false);
     onReply(comment);
@@ -112,23 +117,24 @@ const CommentItem: React.FC<{
 
   return (
     <View style={[styles.commentItem, isReply && styles.replyItem]}>
-      <TouchableOpacity onPress={handleUserPress}>
-        <Image source={{ uri: comment.user.avatar }} style={styles.commentAvatar} />
-      </TouchableOpacity>
+              <TouchableOpacity onPress={handleUserPress}>
+          <Image source={{ uri: comment.user?.avatar || 'https://images.pexels.com/photos/774909/pexels-photo-774909.jpeg?auto=compress&cs=tinysrgb&w=150' }} style={styles.commentAvatar} />
+        </TouchableOpacity>
       
       <View style={styles.commentContent}>
         <View style={styles.commentBubble}>
           <TouchableOpacity onPress={handleUserPress}>
-            <Text style={styles.commentUsername}>{comment.user.username}</Text>
+            <Text style={styles.commentUsername}>
+              {comment.user?.username || 'Unknown User'}
+            </Text>
           </TouchableOpacity>
           <Text style={styles.commentText}>{comment.content}</Text>
-          {comment.isEdited && (
-            <Text style={styles.editedText}>edited</Text>
-          )}
         </View>
         
         <View style={styles.commentActions}>
-          <Text style={styles.commentTimestamp}>{comment.timestamp}</Text>
+          <Text style={styles.commentTimestamp}>
+            {comment.createdAt ? new Date(comment.createdAt).toLocaleDateString() : 'now'}
+          </Text>
           
           <AnimatedTouchableOpacity
             style={[styles.commentAction, likeAnimatedStyle]}
@@ -140,7 +146,7 @@ const CommentItem: React.FC<{
               fill={comment.isLiked ? '#ff6b9d' : 'transparent'}
             />
             <Text style={[styles.commentActionText, comment.isLiked && styles.likedText]}>
-              {comment.likes > 0 ? comment.likes : 'Like'}
+              {comment.likesCount > 0 ? comment.likesCount : 'Like'}
             </Text>
           </AnimatedTouchableOpacity>
           
@@ -150,6 +156,8 @@ const CommentItem: React.FC<{
               <Text style={styles.commentActionText}>Reply</Text>
             </TouchableOpacity>
           )}
+          
+
           
           <TouchableOpacity style={styles.commentAction} onPress={handleMoreOptions}>
             <MoreHorizontal size={12} color="#A0A0A0" />
@@ -171,56 +179,91 @@ const CommentItem: React.FC<{
               </>
             )}
             {!isOwner && (
-              <TouchableOpacity style={styles.actionMenuItem}>
-                <Text style={styles.actionMenuText}>Report</Text>
-              </TouchableOpacity>
+              <>
+                <TouchableOpacity style={styles.actionMenuItem}>
+                  <Text style={styles.actionMenuText}>Report</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.actionMenuItem} onPress={handleDelete}>
+                  <Trash2 size={16} color="#ef4444" />
+                  <Text style={[styles.actionMenuText, { color: '#ef4444' }]}>Delete</Text>
+                </TouchableOpacity>
+              </>
             )}
           </View>
         )}
         
-        {/* Replies */}
-        {comment.replies && comment.replies.length > 0 && (
-          <View style={styles.repliesContainer}>
-            {comment.replies.map((reply) => (
-              <CommentItem
-                key={reply.id}
-                comment={reply}
-                onLike={onLike}
-                onReply={onReply}
-                onEdit={onEdit}
-                onDelete={onDelete}
-                currentUserId={currentUserId}
-                isReply={true}
-              />
-            ))}
-          </View>
-        )}
+        {/* Note: Replies functionality removed for backend integration */}
       </View>
     </View>
   );
 };
 
 export default function CommentSystem({ visible, onClose, postId, postType }: CommentSystemProps) {
-  const {
-    getComments,
-    getCommentCount,
-    addComment,
-    likeComment,
-    deleteComment,
-    editComment,
-    loading
-  } = useComments();
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [commentCount, setCommentCount] = useState(0);
+  
+  // Load comments when modal becomes visible
+  useEffect(() => {
+    if (visible) {
+      loadComments();
+      loadCommentCount();
+    }
+  }, [visible, postId]);
+
+  // Debug: Monitor comments state changes
+  useEffect(() => {
+    console.log('Comments state updated:', comments.length, 'comments');
+    comments.forEach((comment, index) => {
+      console.log(`Comment ${index}:`, comment.id, comment.content);
+    });
+  }, [comments]);
+
+
+
+  const loadComments = async () => {
+    try {
+      setLoading(true);
+      console.log('Loading comments for post:', postId);
+      const fetchedComments = await dataService.comment.getComments(postId);
+      console.log('Fetched comments:', fetchedComments);
+      setComments(fetchedComments);
+      
+      // Debug: Log comments
+      console.log('Comments for post', postId, ':', fetchedComments);
+      fetchedComments.forEach((comment, index) => {
+        console.log(`Comment ${index + 1}:`, {
+          id: comment.id,
+          username: comment.user?.username,
+          content: comment.content,
+          userId: comment.userId
+        });
+      });
+    } catch (error) {
+      console.error('Error loading comments:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadCommentCount = async () => {
+    try {
+      const count = await dataService.comment.getCommentCount(postId);
+      setCommentCount(count);
+    } catch (error) {
+      console.error('Error loading comment count:', error);
+    }
+  };
   
   const [newComment, setNewComment] = useState('');
   const [replyTo, setReplyTo] = useState<Comment | null>(null);
   const [editingComment, setEditingComment] = useState<Comment | null>(null);
   const [editText, setEditText] = useState('');
+  const [sendingComment, setSendingComment] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const textInputRef = useRef<TextInput>(null);
   const slideUp = useSharedValue(0);
 
-  const comments = getComments(postId);
-  const commentCount = getCommentCount(postId);
   const currentUserId = '1'; // Current user ID (luna_mystic)
 
   useEffect(() => {
@@ -250,27 +293,50 @@ export default function CommentSystem({ visible, onClose, postId, postType }: Co
   });
 
   const handleSendComment = async () => {
-    if (newComment.trim()) {
+    if (newComment.trim() && !sendingComment) {
       try {
-        await addComment(postId, postType, newComment, replyTo?.id);
-        setNewComment('');
-        setReplyTo(null);
+        setSendingComment(true);
+        console.log('Adding comment:', { postId, content: newComment.trim(), parentId: replyTo?.id });
+        const newCommentData = await dataService.comment.addComment(postId, newComment.trim(), replyTo?.id);
+        console.log('New comment data:', newCommentData);
         
-        // Scroll to top to show new comment
-        setTimeout(() => {
-          flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
-        }, 100);
-        
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        if (newCommentData) {
+          console.log('Comment added successfully, reloading comments...');
+          setNewComment('');
+          setReplyTo(null);
+          
+          // Small delay to ensure database transaction is complete
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          // Reload comments from backend to ensure consistency
+          await loadComments();
+          loadCommentCount(); // Refresh count
+          
+          // Scroll to top to show new comment
+          setTimeout(() => {
+            flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+          }, 100);
+          
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        } else {
+          console.log('No comment data returned from backend');
+        }
       } catch (error) {
+        console.error('Error adding comment:', error);
         Alert.alert('Error', 'Failed to add comment');
+      } finally {
+        setSendingComment(false);
       }
     }
   };
 
   const handleLikeComment = async (commentId: string) => {
     try {
-      await likeComment(postId, commentId);
+      const success = await dataService.comment.toggleCommentLike(commentId);
+      if (success) {
+        // Refresh comments to get updated like status
+        loadComments();
+      }
     } catch (error) {
       Alert.alert('Error', 'Failed to like comment');
     }
@@ -278,7 +344,7 @@ export default function CommentSystem({ visible, onClose, postId, postType }: Co
 
   const handleReplyToComment = (comment: Comment) => {
     setReplyTo(comment);
-    setNewComment(`@${comment.user.username} `);
+    setNewComment(`@${comment.user?.username || 'user'} `);
     textInputRef.current?.focus();
   };
 
@@ -290,10 +356,13 @@ export default function CommentSystem({ visible, onClose, postId, postType }: Co
   const handleSaveEdit = async () => {
     if (editingComment && editText.trim()) {
       try {
-        await editComment(postId, editingComment.id, editText);
-        setEditingComment(null);
-        setEditText('');
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        const updatedComment = await dataService.comment.editComment(editingComment.id, editText.trim());
+        if (updatedComment) {
+          setComments(prev => prev.map(c => c.id === editingComment.id ? updatedComment : c));
+          setEditingComment(null);
+          setEditText('');
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
       } catch (error) {
         Alert.alert('Error', 'Failed to edit comment');
       }
@@ -302,8 +371,12 @@ export default function CommentSystem({ visible, onClose, postId, postType }: Co
 
   const handleDeleteComment = async (commentId: string) => {
     try {
-      await deleteComment(postId, commentId);
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      const success = await dataService.comment.deleteComment(commentId);
+      if (success) {
+        setComments(prev => prev.filter(c => c.id !== commentId));
+        loadCommentCount(); // Refresh count
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      }
     } catch (error) {
       Alert.alert('Error', 'Failed to delete comment');
     }
@@ -345,10 +418,15 @@ export default function CommentSystem({ visible, onClose, postId, postType }: Co
     >
       <View style={styles.overlay}>
         <Animated.View style={[styles.container, animatedStyle]}>
-          <LinearGradient
-            colors={['#1a0a2e', '#16213e', '#0f0518']}
-            style={styles.gradient}
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 170 : 0}
+            style={{ flex: 1 }}
           >
+            <LinearGradient
+              colors={['#1a0a2e', '#16213e', '#0f0518']}
+              style={styles.gradient}
+            >
             {/* Header */}
             <View style={styles.header}>
               <Text style={styles.title}>
@@ -405,7 +483,7 @@ export default function CommentSystem({ visible, onClose, postId, postType }: Co
             {replyTo && (
               <View style={styles.replyIndicator}>
                 <Text style={styles.replyText}>
-                  Replying to @{replyTo.user.username}
+                  Replying to @{replyTo.user?.username || 'user'}
                 </Text>
                 <TouchableOpacity onPress={() => setReplyTo(null)}>
                   <X size={16} color="#A0A0A0" />
@@ -414,35 +492,39 @@ export default function CommentSystem({ visible, onClose, postId, postType }: Co
             )}
 
             {/* Input */}
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-              style={styles.inputContainer}
-            >
+            <View style={styles.inputContainer}>
               <View style={styles.inputRow}>
                 <TextInput
                   ref={textInputRef}
                   style={styles.textInput}
-                  placeholder={replyTo ? `Reply to @${replyTo.user.username}...` : 'Add a comment...'}
+                  placeholder={replyTo ? `Reply to @${replyTo.user?.username || 'user'}...` : 'Add a comment...'}
                   placeholderTextColor="#A0A0A0"
                   value={newComment}
                   onChangeText={setNewComment}
                   multiline
                   maxLength={2000}
+                  onFocus={() => {
+                    // Scroll to bottom when input is focused
+                    setTimeout(() => {
+                      flatListRef.current?.scrollToEnd({ animated: true });
+                    }, 100);
+                  }}
                 />
                 <TouchableOpacity
                   style={[styles.sendButton, newComment.trim() && styles.sendButtonActive]}
                   onPress={handleSendComment}
-                  disabled={!newComment.trim() || loading}
+                  disabled={!newComment.trim() || loading || sendingComment}
                 >
-                  {loading ? (
+                  {loading || sendingComment ? (
                     <ActivityIndicator size="small" color="#9B61E5" />
                   ) : (
                     <Send size={20} color={newComment.trim() ? '#9B61E5' : '#666666'} />
                   )}
                 </TouchableOpacity>
               </View>
-            </KeyboardAvoidingView>
+            </View>
           </LinearGradient>
+          </KeyboardAvoidingView>
         </Animated.View>
       </View>
     </Modal>
@@ -661,6 +743,9 @@ const styles = StyleSheet.create({
     borderTopColor: 'rgba(155, 97, 229, 0.3)',
     paddingHorizontal: 20,
     paddingVertical: 12,
+    backgroundColor: 'rgba(26, 10, 46, 0.95)',
+    position: 'relative',
+    zIndex: 1000,
   },
   inputRow: {
     flexDirection: 'row',
@@ -689,4 +774,5 @@ const styles = StyleSheet.create({
   sendButtonActive: {
     backgroundColor: 'rgba(155, 97, 229, 0.3)',
   },
+
 });

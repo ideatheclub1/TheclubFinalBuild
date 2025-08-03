@@ -832,6 +832,85 @@ export const postService = {
     }
   },
 
+  // Get posts from users that the current user follows (Feed)
+  async getFeedPosts(currentUserId: string, limit = 20, offset = 0): Promise<Post[]> {
+    try {
+      debug.dbQuery('feed_posts', 'SELECT', { currentUserId, limit, offset });
+      
+      // First, get the users that the current user follows
+      const { data: followingData, error: followingError } = await supabase
+        .from('followers')
+        .select('following_id')
+        .eq('follower_id', currentUserId);
+
+      if (followingError) {
+        debug.dbError('followers', 'SELECT', followingError);
+        return [];
+      }
+
+      const followingIds = followingData?.map(f => f.following_id) || [];
+      
+      // If user doesn't follow anyone, return empty array
+      if (followingIds.length === 0) {
+        debug.dbSuccess('feed_posts', 'SELECT', { message: 'No following users found', count: 0 });
+        return [];
+      }
+
+      // Get posts from followed users
+      const { data, error } = await supabase
+        .from('posts')
+        .select(`
+          *,
+          user_profiles!posts_user_id_fkey (
+            id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time
+          )
+        `)
+        .in('user_id', followingIds)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (error || !data) {
+        debug.dbError('posts', 'SELECT', error);
+        return [];
+      }
+
+      const posts = data.map(post => ({
+        id: post.id,
+        user: {
+          id: post.user_profiles.id,
+          username: post.user_profiles.username || post.user_profiles.handle || '',
+          avatar: post.user_profiles.avatar || post.user_profiles.profile_picture || 'https://images.pexels.com/photos/774909/pexels-photo-774909.jpeg?auto=compress&cs=tinysrgb&w=150',
+          bio: post.user_profiles.bio || '',
+          location: post.user_profiles.location || '',
+          age: post.user_profiles.age || 0,
+          isHost: post.user_profiles.is_host || false,
+          hourlyRate: post.user_profiles.hourly_rate || 0,
+          totalChats: post.user_profiles.total_chats || 0,
+          responseTime: post.user_profiles.response_time || '5 min',
+          isFollowing: true, // User follows this post creator
+        },
+        content: post.content,
+        image: post.image_url,
+        imageUrl: post.image_url,
+        likes: post.likes_count || 0,
+        likesCount: post.likes_count || 0,
+        comments: post.comments_count || 0,
+        commentsCount: post.comments_count || 0,
+        isLiked: false, // Will be checked separately
+        isTrending: post.is_trending || false,
+        timestamp: post.created_at,
+        createdAt: post.created_at,
+        updatedAt: post.updated_at,
+      }));
+
+      debug.dbSuccess('feed_posts', 'SELECT', { count: posts.length, followingCount: followingIds.length });
+      return posts;
+    } catch (error) {
+      debug.dbError('feed_posts', 'SELECT', { error: (error as Error).message });
+      return [];
+    }
+  },
+
   // Create a new post
   async createPost(userId: string, content: string, imageUrl?: string, hashtags?: string[]): Promise<Post | null> {
     try {
@@ -948,6 +1027,9 @@ export const postService = {
           .from('likes')
           .delete()
           .eq('id', existingLike.id);
+        
+        // Note: likes_count will be updated by database trigger or calculated on-demand
+        
         return !error;
       } else {
         // Like
@@ -957,11 +1039,95 @@ export const postService = {
             user_id: userId,
             post_id: postId,
           });
+        
+        // Note: likes_count will be updated by database trigger or calculated on-demand
+        
         return !error;
       }
     } catch (error) {
       console.error('Error toggling post like:', error);
       return false;
+    }
+  },
+
+  // Get likes count for a post
+  async getPostLikesCount(postId: string): Promise<number> {
+    try {
+      const { count, error } = await supabase
+        .from('likes')
+        .select('*', { count: 'exact', head: true })
+        .eq('post_id', postId);
+
+      if (error) {
+        console.error('Error getting likes count:', error);
+        return 0;
+      }
+
+      return count || 0;
+    } catch (error) {
+      console.error('Error getting likes count:', error);
+      return 0;
+    }
+  },
+
+  // Get users who liked a post
+  async getPostLikes(postId: string, currentUserId?: string): Promise<User[]> {
+    try {
+      console.log('Fetching likes for post:', postId);
+      
+      // First, get the likes for this post
+      const { data: likesData, error: likesError } = await supabase
+        .from('likes')
+        .select('user_id')
+        .eq('post_id', postId)
+        .order('created_at', { ascending: false });
+
+      if (likesError) {
+        console.error('Supabase error fetching likes:', likesError);
+        return [];
+      }
+
+      if (!likesData || likesData.length === 0) {
+        console.log('No likes found for post:', postId);
+        return [];
+      }
+
+      // Get user IDs from likes
+      const userIds = likesData.map(like => like.user_id);
+      console.log('User IDs who liked:', userIds);
+
+      // Get user profiles for these users
+      const { data: userProfiles, error: usersError } = await supabase
+        .from('user_profiles')
+        .select('id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time')
+        .in('id', userIds);
+
+      if (usersError) {
+        console.error('Supabase error fetching user profiles:', usersError);
+        return [];
+      }
+
+      console.log('User profiles found:', userProfiles);
+
+      const users = userProfiles?.map(userProfile => ({
+        id: userProfile.id,
+        username: userProfile.username || userProfile.handle || '',
+        avatar: userProfile.avatar || userProfile.profile_picture || 'https://images.pexels.com/photos/774909/pexels-photo-774909.jpeg?auto=compress&cs=tinysrgb&w=150',
+        bio: userProfile.bio || '',
+        location: userProfile.location || '',
+        age: userProfile.age || 0,
+        isHost: userProfile.is_host || false,
+        hourlyRate: userProfile.hourly_rate || 0,
+        totalChats: userProfile.total_chats || 0,
+        responseTime: userProfile.response_time || '5 min',
+        isFollowing: false,
+      })) || [];
+
+      console.log('Final users array:', users);
+      return users;
+    } catch (error) {
+      console.error('Error fetching post likes:', error);
+      return [];
     }
   },
 };
@@ -1439,6 +1605,517 @@ export const hostService = {
 };
 
 // =====================================================
+// STORAGE OPERATIONS
+// =====================================================
+
+export const storageService = {
+  // Upload image to specific bucket
+  async uploadImage(
+    file: { uri: string; type?: string; name?: string },
+    bucket: 'avatars' | 'posts' | 'stories' | 'reels' | 'user-media',
+    userId: string,
+    options: {
+      folder?: string;
+      quality?: number;
+      resize?: { width: number; height: number };
+    } = {}
+  ): Promise<{ url: string; path: string } | null> {
+    try {
+      const startTime = Date.now();
+      debug.apiCall('storage', 'uploadImage', { bucket, userId, file: file.name });
+      
+      // Generate unique filename
+      const timestamp = Date.now();
+      const extension = file.name?.split('.').pop() || 'jpg';
+      const folder = options.folder || 'uploads';
+      const fileName = `${userId}/${folder}/${timestamp}.${extension}`;
+      
+      // Convert URI to blob
+      const response = await fetch(file.uri);
+      const blob = await response.blob();
+      
+      // Upload to Supabase storage
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .upload(fileName, blob, {
+          contentType: file.type || 'image/jpeg',
+          upsert: true,
+        });
+
+      if (error) {
+        debug.apiError('storage', 'uploadImage', error);
+        debugLogger.error('STORAGE', 'UPLOAD_IMAGE', 'Image upload failed', error);
+        return null;
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from(bucket)
+        .getPublicUrl(fileName);
+
+      debug.apiSuccess('storage', 'uploadImage', { url: publicUrl, path: fileName }, Date.now() - startTime);
+      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Image uploaded successfully: ${publicUrl}`);
+      
+      return { url: publicUrl, path: fileName };
+    } catch (error) {
+      debugLogger.error('STORAGE', 'UPLOAD_IMAGE', 'Exception occurred during image upload', error);
+      return null;
+    }
+  },
+
+  // Upload video to specific bucket
+  async uploadVideo(
+    file: { uri: string; type?: string; name?: string },
+    bucket: 'reels' | 'stories' | 'user-media',
+    userId: string,
+    options: {
+      folder?: string;
+      maxDuration?: number;
+    } = {}
+  ): Promise<{ url: string; path: string } | null> {
+    try {
+      const startTime = Date.now();
+      debug.apiCall('storage', 'uploadVideo', { bucket, userId, file: file.name });
+      
+      // Generate unique filename
+      const timestamp = Date.now();
+      const extension = file.name?.split('.').pop() || 'mp4';
+      const folder = options.folder || 'videos';
+      const fileName = `${userId}/${folder}/${timestamp}.${extension}`;
+      
+      // Convert URI to blob
+      const response = await fetch(file.uri);
+      const blob = await response.blob();
+      
+      // Upload to Supabase storage
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .upload(fileName, blob, {
+          contentType: file.type || 'video/mp4',
+          upsert: true,
+        });
+
+      if (error) {
+        debug.apiError('storage', 'uploadVideo', error);
+        debugLogger.error('STORAGE', 'UPLOAD_VIDEO', 'Video upload failed', error);
+        return null;
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from(bucket)
+        .getPublicUrl(fileName);
+
+      debug.apiSuccess('storage', 'uploadVideo', { url: publicUrl, path: fileName }, Date.now() - startTime);
+      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Video uploaded successfully: ${publicUrl}`);
+      
+      return { url: publicUrl, path: fileName };
+    } catch (error) {
+      debugLogger.error('STORAGE', 'UPLOAD_VIDEO', 'Exception occurred during video upload', error);
+      return null;
+    }
+  },
+
+  // Delete file from storage
+  async deleteFile(bucket: string, path: string): Promise<boolean> {
+    try {
+      const startTime = Date.now();
+      debug.apiCall('storage', 'deleteFile', { bucket, path });
+      
+      const { error } = await supabase.storage
+        .from(bucket)
+        .remove([path]);
+
+      if (error) {
+        debug.apiError('storage', 'deleteFile', error);
+        debugLogger.error('STORAGE', 'DELETE_FILE', 'File deletion failed', error);
+        return false;
+      }
+
+      debug.apiSuccess('storage', 'deleteFile', { bucket, path }, Date.now() - startTime);
+      debugLogger.info('STORAGE', 'DELETE_SUCCESS', `File deleted successfully: ${path}`);
+      
+      return true;
+    } catch (error) {
+      debugLogger.error('STORAGE', 'DELETE_FILE', 'Exception occurred during file deletion', error);
+      return false;
+    }
+  },
+
+  // Get user's media files
+  async getUserMedia(userId: string, type: 'images' | 'videos' | 'all' = 'all'): Promise<Array<{
+    id: string;
+    url: string;
+    type: 'image' | 'video';
+    name: string;
+    size: number;
+    createdAt: string;
+    bucket: string;
+    path: string;
+  }>> {
+    try {
+      const startTime = Date.now();
+      debug.dbQuery('storage.objects', 'SELECT', { userId, type });
+      debugLogger.info('STORAGE', 'GET_USER_MEDIA_START', `Fetching media for user: ${userId}, type: ${type}`);
+      
+      // Query storage objects for the user
+      const { data, error } = await supabase.storage
+        .from('user-media')
+        .list(`${userId}/`, {
+          limit: 100,
+          offset: 0,
+        });
+
+      if (error) {
+        debug.dbError('storage.objects', 'SELECT', error);
+        debugLogger.error('STORAGE', 'GET_USER_MEDIA', 'Failed to fetch user media', error);
+        return [];
+      }
+
+      if (!data || data.length === 0) {
+        debugLogger.info('STORAGE', 'GET_USER_MEDIA', `No media files found for user: ${userId}`);
+        return [];
+      }
+
+      const mediaFiles = data
+        .filter(file => {
+          if (type === 'images') return file.metadata?.mimetype?.startsWith('image/');
+          if (type === 'videos') return file.metadata?.mimetype?.startsWith('video/');
+          return true;
+        })
+        .map(file => {
+          const { data: { publicUrl } } = supabase.storage
+            .from('user-media')
+            .getPublicUrl(`${userId}/${file.name}`);
+
+          return {
+            id: file.id || file.name,
+            url: publicUrl,
+            type: file.metadata?.mimetype?.startsWith('video/') ? 'video' as const : 'image' as const,
+            name: file.name,
+            size: file.metadata?.size || 0,
+            createdAt: file.created_at || new Date().toISOString(),
+            bucket: 'user-media',
+            path: `${userId}/${file.name}`,
+          };
+        });
+
+      debug.dbSuccess('storage.objects', 'SELECT', { userId, count: mediaFiles.length }, Date.now() - startTime);
+      debugLogger.info('STORAGE', 'GET_USER_MEDIA_SUCCESS', `Found ${mediaFiles.length} media files for user: ${userId}`);
+      
+      return mediaFiles;
+    } catch (error) {
+      debugLogger.error('STORAGE', 'GET_USER_MEDIA', 'Exception occurred while fetching user media', error);
+      return [];
+    }
+  },
+};
+
+// =====================================================
+// COMMENT OPERATIONS
+// =====================================================
+
+// Helper function to format timestamp
+const formatTimestamp = (timestamp: string): string => {
+  const now = new Date();
+  const commentTime = new Date(timestamp);
+  const diffInMinutes = Math.floor((now.getTime() - commentTime.getTime()) / (1000 * 60));
+  
+  if (diffInMinutes < 1) return 'now';
+  if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
+  
+  const diffInHours = Math.floor(diffInMinutes / 60);
+  if (diffInHours < 24) return `${diffInHours}h ago`;
+  
+  const diffInDays = Math.floor(diffInHours / 24);
+  if (diffInDays < 7) return `${diffInDays}d ago`;
+  
+  return commentTime.toLocaleDateString();
+};
+
+export const commentService = {
+  // Get comments for a post
+  async getComments(postId: string): Promise<Comment[]> {
+    try {
+      const startTime = Date.now();
+      debug.dbQuery('comments', 'SELECT', { postId });
+      
+      // First try the view, if it doesn't exist, fall back to direct table query
+      let { data, error } = await supabase
+        .from('comments_with_users')
+        .select('*')
+        .eq('post_id', postId)
+        .order('created_at', { ascending: true });
+
+      if (error && error.code === '42P01') {
+        // View doesn't exist, use direct table query
+        console.log('comments_with_users view not found, using direct table query');
+        const { data: commentsData, error: commentsError } = await supabase
+          .from('comments')
+          .select(`
+            *,
+            user:user_profiles(id, username, avatar)
+          `)
+          .eq('post_id', postId)
+          .order('created_at', { ascending: true });
+
+        if (commentsError) {
+          debug.dbError('comments', 'SELECT', commentsError);
+          return [];
+        }
+
+        data = commentsData;
+      } else if (error) {
+        debug.dbError('comments_with_users', 'SELECT', error);
+        return [];
+      }
+      
+      // Transform data to match Comment interface
+      const comments = (data || []).map((comment: any) => {
+        // Handle both view and direct table query formats
+        const userData = comment.user || {
+          id: comment.user_id,
+          username: comment.username,
+          avatar: comment.avatar
+        };
+        
+        return {
+          id: comment.id,
+          postId: comment.post_id,
+          userId: comment.user_id,
+          user: {
+            id: userData.id,
+            username: userData.username,
+            avatar: userData.avatar
+          },
+          content: comment.content,
+          parentId: comment.parent_id,
+          likesCount: comment.likes_count,
+          isLiked: comment.is_liked_by_current_user || false,
+          createdAt: comment.created_at,
+          updatedAt: comment.updated_at
+        };
+      });
+
+      debug.dbSuccess('comments_with_users', 'SELECT', { postId, count: comments.length }, Date.now() - startTime);
+      return comments;
+    } catch (error) {
+      debugLogger.error('DATABASE', 'GET_COMMENTS', 'Exception occurred while fetching comments', error);
+      return [];
+    }
+  },
+
+  // Add a new comment
+  async addComment(postId: string, content: string, parentId?: string): Promise<Comment | null> {
+    try {
+      const startTime = Date.now();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      debug.dbQuery('comments', 'INSERT', { postId, content, parentId, userId: user.id });
+
+      const { data, error } = await supabase
+        .from('comments')
+        .insert({
+          post_id: postId,
+          user_id: user.id,
+          content,
+          parent_id: parentId
+        })
+        .select(`
+          *,
+          user:user_profiles(id, username, avatar)
+        `)
+        .single();
+
+      if (error) {
+        debug.dbError('comments', 'INSERT', error);
+        return null;
+      }
+      
+      // Transform to match Comment interface
+      const comment: Comment = {
+        id: data.id,
+        postId: data.post_id,
+        userId: data.user_id,
+        user: {
+          id: data.user_id,
+          username: data.user.username,
+          avatar: data.user.avatar
+        },
+        content: data.content,
+        parentId: data.parent_id,
+        likesCount: data.likes_count,
+        isLiked: false,
+        createdAt: data.created_at,
+        updatedAt: data.updated_at
+      };
+
+      debug.dbSuccess('comments', 'INSERT', { postId, commentId: data.id }, Date.now() - startTime);
+      return comment;
+    } catch (error) {
+      debugLogger.error('DATABASE', 'ADD_COMMENT', 'Exception occurred while adding comment', error);
+      return null;
+    }
+  },
+
+  // Toggle comment like
+  async toggleCommentLike(commentId: string): Promise<boolean> {
+    try {
+      const startTime = Date.now();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      debug.dbQuery('comment_likes', 'TOGGLE', { commentId, userId: user.id });
+
+      // Check if already liked
+      const { data: existingLike } = await supabase
+        .from('comment_likes')
+        .select('id')
+        .eq('comment_id', commentId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (existingLike) {
+        // Unlike
+        const { error } = await supabase
+          .from('comment_likes')
+          .delete()
+          .eq('comment_id', commentId)
+          .eq('user_id', user.id);
+
+        if (error) {
+          debug.dbError('comment_likes', 'DELETE', error);
+          return false;
+        }
+      } else {
+        // Like
+        const { error } = await supabase
+          .from('comment_likes')
+          .insert({
+            comment_id: commentId,
+            user_id: user.id
+          });
+
+        if (error) {
+          debug.dbError('comment_likes', 'INSERT', error);
+          return false;
+        }
+      }
+
+      debug.dbSuccess('comment_likes', 'TOGGLE', { commentId, userId: user.id }, Date.now() - startTime);
+      return true;
+    } catch (error) {
+      debugLogger.error('DATABASE', 'TOGGLE_COMMENT_LIKE', 'Exception occurred while toggling comment like', error);
+      return false;
+    }
+  },
+
+  // Delete a comment
+  async deleteComment(commentId: string): Promise<boolean> {
+    try {
+      const startTime = Date.now();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      debug.dbQuery('comments', 'DELETE', { commentId, userId: user.id });
+
+      const { error } = await supabase
+        .from('comments')
+        .delete()
+        .eq('id', commentId)
+        .eq('user_id', user.id);
+
+      if (error) {
+        debug.dbError('comments', 'DELETE', error);
+        return false;
+      }
+
+      debug.dbSuccess('comments', 'DELETE', { commentId }, Date.now() - startTime);
+      return true;
+    } catch (error) {
+      debugLogger.error('DATABASE', 'DELETE_COMMENT', 'Exception occurred while deleting comment', error);
+      return false;
+    }
+  },
+
+  // Edit a comment
+  async editComment(commentId: string, content: string): Promise<Comment | null> {
+    try {
+      const startTime = Date.now();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
+      debug.dbQuery('comments', 'UPDATE', { commentId, content, userId: user.id });
+
+      const { data, error } = await supabase
+        .from('comments')
+        .update({ content })
+        .eq('id', commentId)
+        .eq('user_id', user.id)
+        .select(`
+          *,
+          user:user_profiles(id, username, avatar)
+        `)
+        .single();
+
+      if (error) {
+        debug.dbError('comments', 'UPDATE', error);
+        return null;
+      }
+      
+      // Transform to match Comment interface
+      const comment: Comment = {
+        id: data.id,
+        postId: data.post_id,
+        userId: data.user_id,
+        user: {
+          id: data.user_id,
+          username: data.user.username,
+          avatar: data.user.avatar
+        },
+        content: data.content,
+        parentId: data.parent_id,
+        likesCount: data.likes_count,
+        isLiked: false, // Will be updated when fetched
+        createdAt: data.created_at,
+        updatedAt: data.updated_at
+      };
+
+      debug.dbSuccess('comments', 'UPDATE', { commentId }, Date.now() - startTime);
+      return comment;
+    } catch (error) {
+      debugLogger.error('DATABASE', 'EDIT_COMMENT', 'Exception occurred while editing comment', error);
+      return null;
+    }
+  },
+
+  // Get comment count for a post
+  async getCommentCount(postId: string): Promise<number> {
+    try {
+      const startTime = Date.now();
+      debug.dbQuery('comments', 'COUNT', { postId });
+      
+      const { count, error } = await supabase
+        .from('comments')
+        .select('*', { count: 'exact', head: true })
+        .eq('post_id', postId);
+
+      if (error) {
+        debug.dbError('comments', 'COUNT', error);
+        return 0;
+      }
+
+      debug.dbSuccess('comments', 'COUNT', { postId, count }, Date.now() - startTime);
+      return count || 0;
+    } catch (error) {
+      debugLogger.error('DATABASE', 'GET_COMMENT_COUNT', 'Exception occurred while getting comment count', error);
+      return 0;
+    }
+  }
+};
+
+// =====================================================
 // EXPORT ALL SERVICES
 // =====================================================
 
@@ -1450,4 +2127,6 @@ export const dataService = {
   hashtag: hashtagService,
   host: hostService,
   review: reviewService,
+  storage: storageService,
+  comment: commentService,
 }; 

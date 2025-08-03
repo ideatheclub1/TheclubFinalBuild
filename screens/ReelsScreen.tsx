@@ -8,6 +8,7 @@ import {
   RefreshControl,
   Text,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -112,7 +113,7 @@ export default function ReelsScreen() {
     }, 1000);
   }, [reels.length]);
 
-  const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
+  const onViewableItemsChanged = useCallback(({ viewableItems }: { viewableItems: any[] }) => {
     if (viewableItems.length > 0) {
       const newIndex = viewableItems[0].index;
       debug.userAction('Reel view changed', { 
@@ -196,7 +197,7 @@ export default function ReelsScreen() {
           offset: SCREEN_HEIGHT * index,
           index,
         })}
-        removeClippedSubviews={true}
+        removeClippedSubviews={Platform.OS !== 'web'}
         maxToRenderPerBatch={2}
         windowSize={3}
         initialNumToRender={1}

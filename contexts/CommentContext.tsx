@@ -276,8 +276,9 @@ export const CommentProvider: React.FC<{ children: ReactNode }> = ({ children })
 
   const addComment = async (postId: string, postType: 'feed' | 'reel', content: string, parentId?: string) => {
     try {
-      // Use the first mock user as fallback
-      const currentUser = mockUsers[0];
+      // Randomly select a mock user for variety
+      const randomUserIndex = Math.floor(Math.random() * mockUsers.length);
+      const currentUser = mockUsers[randomUserIndex];
       if (!currentUser || !content?.trim()) {
         return;
       }

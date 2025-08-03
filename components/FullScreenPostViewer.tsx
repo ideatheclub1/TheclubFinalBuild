@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   Modal,
   StatusBar,
   Alert,
+  Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -168,11 +169,11 @@ export default function FullScreenPostViewer({
     </View>
   );
 
-  const onViewableItemsChanged = ({ viewableItems }: any) => {
+  const onViewableItemsChanged = useCallback(({ viewableItems }: { viewableItems: any[] }) => {
     if (viewableItems.length > 0) {
       setCurrentIndex(viewableItems[0].index);
     }
-  };
+  }, []);
 
   if (!visible || !currentPost) return null;
 
@@ -223,6 +224,10 @@ export default function FullScreenPostViewer({
                 offset: width * index,
                 index,
               })}
+              removeClippedSubviews={Platform.OS !== 'web'}
+              maxToRenderPerBatch={2}
+              windowSize={3}
+              initialNumToRender={1}
             />
 
             {/* Footer */}

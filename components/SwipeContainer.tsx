@@ -29,11 +29,12 @@ const MESSAGES_SNAP_POINT = SCREEN_WIDTH * 0.85;
 
 interface SwipeContainerProps {
   children: React.ReactNode;
+  disableGestures?: boolean;
 }
 
 type SwipeDirection = 'camera' | 'home' | 'messages';
 
-export default function SwipeContainer({ children }: SwipeContainerProps) {
+export default function SwipeContainer({ children, disableGestures = false }: SwipeContainerProps) {
   const [currentView, setCurrentView] = useState<SwipeDirection>('home');
   const [cameraMounted, setCameraMounted] = useState(false);
   const [messagesMounted, setMessagesMounted] = useState(false);
@@ -214,11 +215,17 @@ export default function SwipeContainer({ children }: SwipeContainerProps) {
       <Animated.View style={[styles.backgroundOverlay, backgroundStyle]} />
       
       {/* Main content container */}
-      <PanGestureHandler onGestureEvent={gestureHandler}>
+      {disableGestures ? (
         <Animated.View style={[styles.mainContainer, containerStyle]}>
           {children}
         </Animated.View>
-      </PanGestureHandler>
+      ) : (
+        <PanGestureHandler onGestureEvent={gestureHandler}>
+          <Animated.View style={[styles.mainContainer, containerStyle]}>
+            {children}
+          </Animated.View>
+        </PanGestureHandler>
+      )}
       
       {/* Camera Screen (Left Swipe) - Pre-mounted */}
       {cameraMounted && (

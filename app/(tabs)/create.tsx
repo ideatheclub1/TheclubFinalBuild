@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -8,9 +8,15 @@ import {
   Alert,
   StatusBar,
   Platform,
+  TextInput,
+  ActivityIndicator,
+  Image,
+  Keyboard,
+  TouchableWithoutFeedback,
+  ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Camera, Video, Play } from 'lucide-react-native';
+import { Camera, Video, Play, Upload, X } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Animated, {
   useSharedValue,
@@ -23,14 +29,26 @@ import Animated, {
 import * as Haptics from 'expo-haptics';
 import CameraScreen from '../../components/CameraScreen';
 import { useDebugLogger, debug } from '@/utils/debugLogger';
+import { useUser } from '@/contexts/UserContext';
+import { dataService } from '@/services/dataService';
+import { Video as VideoPlayer, ResizeMode } from 'expo-av';
 
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
 export default function CreateScreen() {
   const debugLogger = useDebugLogger('CreateScreen');
   const router = useRouter();
-  const [showCamera, setShowCamera] = React.useState(false);
-  const [cameraMode, setCameraMode] = React.useState<'photo' | 'video'>('photo');
+  const { user } = useUser();
+  
+  const [showCamera, setShowCamera] = useState(false);
+  const [cameraMode, setCameraMode] = useState<'photo' | 'video'>('photo');
+  const [capturedMedia, setCapturedMedia] = useState<{
+    uri: string;
+    type: 'image' | 'video';
+    name: string;
+  } | null>(null);
+  const [postContent, setPostContent] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
 
   // Debug: Page load
   useEffect(() => {
@@ -83,6 +101,124 @@ export default function CreateScreen() {
     setShowCamera(false);
   };
 
+  const handleMediaCaptured = (asset: { uri: string; type?: string; name?: string }) => {
+    debug.userAction('Media captured', { type: asset.type, name: asset.name });
+    debugLogger.log('MEDIA', 'CAPTURED', `Media captured: ${asset.name}`);
+    
+    setCapturedMedia({
+      uri: asset.uri,
+      type: asset.type?.startsWith('video/') ? 'video' : 'image',
+      name: asset.name || `media-${Date.now()}`
+    });
+    setShowCamera(false);
+  };
+
+  const handleUploadAndCreatePost = async () => {
+    if (!capturedMedia || !user) {
+      Alert.alert('Error', 'No media or user found');
+      return;
+    }
+
+    try {
+      setIsUploading(true);
+      debug.userAction('Upload and create post', { mediaType: capturedMedia.type });
+      debugLogger.log('POST', 'CREATE_START', `Creating post with ${capturedMedia.type}`);
+
+      // Upload media to storage
+      const uploadResult = capturedMedia.type === 'video' 
+        ? await dataService.storage.uploadVideo(
+            { uri: capturedMedia.uri, type: capturedMedia.type === 'video' ? 'video/mp4' : 'image/jpeg', name: capturedMedia.name },
+            'posts',
+            user.id,
+            { folder: capturedMedia.type === 'video' ? 'videos' : 'images' }
+          )
+        : await dataService.storage.uploadImage(
+            { uri: capturedMedia.uri, type: 'image/jpeg', name: capturedMedia.name },
+            'posts',
+            user.id,
+            { folder: 'images' }
+          );
+
+      if (!uploadResult) {
+        throw new Error('Failed to upload media');
+      }
+
+      debugLogger.log('UPLOAD', 'SUCCESS', `Media uploaded: ${uploadResult.url}`);
+
+      // Create the post or reel based on media type
+      const content = postContent.trim() || `Check out my ${capturedMedia.type}!`;
+      
+      let post = null;
+      if (capturedMedia.type === 'image') {
+        // Create a post for images
+        post = await dataService.post.createPost(user.id, content, uploadResult.url);
+      } else if (capturedMedia.type === 'video') {
+        // Create a reel for videos
+        post = await dataService.reel.createReel(
+          user.id,
+          uploadResult.url,
+          content,
+          0, // duration will be calculated by the app
+          undefined, // hashtags
+          undefined // musicInfo
+        );
+      }
+
+      if (post) {
+        debugLogger.log('POST', 'CREATE_SUCCESS', 'Post created successfully');
+        Alert.alert(
+          'Success!', 
+          `Your ${capturedMedia.type === 'video' ? 'video' : 'photo'} has been posted!`,
+          [
+            {
+              text: 'View Feed',
+              onPress: () => router.push('/(tabs)/')
+            },
+            {
+              text: 'Create Another',
+              onPress: () => {
+                setCapturedMedia(null);
+                setPostContent('');
+                Keyboard.dismiss();
+              }
+            }
+          ]
+        );
+      } else {
+        throw new Error('Failed to create post');
+      }
+    } catch (error) {
+      debugLogger.error('POST', 'CREATE_ERROR', 'Failed to create post', error);
+      Alert.alert('Error', 'Failed to create post. Please try again.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDiscardMedia = () => {
+    Alert.alert(
+      'Discard Media',
+      'Are you sure you want to discard this media?',
+      [
+        { text: 'Keep', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: () => {
+            setCapturedMedia(null);
+            setPostContent('');
+            Keyboard.dismiss();
+            debug.userAction('Media discarded');
+          }
+        }
+      ]
+    );
+  };
+
+  const dismissKeyboard = () => {
+    Keyboard.dismiss();
+  };
+
   const photoButtonStyle = useAnimatedStyle(() => ({
     transform: [{ scale: photoButtonScale.value }],
   }));
@@ -95,21 +231,104 @@ export default function CreateScreen() {
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#1E1E1E" />
       
-      <LinearGradient
-        colors={['#1E1E1E', '#2A2A2A', '#121212']}
-        style={styles.background}
-      >
+      <TouchableWithoutFeedback onPress={dismissKeyboard}>
+        <LinearGradient
+          colors={['#1E1E1E', '#2A2A2A', '#121212']}
+          style={styles.background}
+        >
+          <ScrollView 
+            style={styles.scrollView}
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
         {/* Header */}
         <Animated.View 
           style={styles.header}
           entering={FadeIn.duration(800)}
         >
           <Text style={styles.title}>Create</Text>
-          <Text style={styles.subtitle}>Share your moment with The Club</Text>
+          <Text style={styles.subtitle}>
+            {capturedMedia ? 'Create your post' : 'Share your moment with The Club'}
+          </Text>
         </Animated.View>
 
-        {/* Action Buttons */}
-        <View style={styles.buttonsContainer}>
+        {/* Media Preview and Post Creation */}
+        {capturedMedia && (
+          <Animated.View 
+            style={styles.mediaPreviewContainer}
+            entering={FadeIn.duration(500)}
+          >
+            {/* Media Preview */}
+            <View style={styles.mediaPreview}>
+              {capturedMedia.type === 'video' ? (
+                <VideoPlayer
+                  source={{ uri: capturedMedia.uri }}
+                  style={styles.previewMedia}
+                  resizeMode={ResizeMode.COVER}
+                  shouldPlay={false}
+                  isLooping={false}
+                  useNativeControls
+                />
+              ) : (
+                <Image
+                  source={{ uri: capturedMedia.uri }}
+                  style={styles.previewMedia}
+                  resizeMode="cover"
+                />
+              )}
+              
+              {/* Discard Button */}
+              <TouchableOpacity
+                style={styles.discardButton}
+                onPress={handleDiscardMedia}
+              >
+                <X size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Post Content Input */}
+            <View style={styles.postInputContainer}>
+              <TextInput
+                style={styles.postInput}
+                placeholder="Write a caption..."
+                placeholderTextColor="#888888"
+                multiline
+                maxLength={500}
+                value={postContent}
+                onChangeText={setPostContent}
+                returnKeyType="done"
+                blurOnSubmit={true}
+                onSubmitEditing={dismissKeyboard}
+              />
+            </View>
+
+            {/* Create Post Button */}
+            <TouchableOpacity
+              style={[styles.createPostButton, isUploading && styles.createPostButtonDisabled]}
+              onPress={handleUploadAndCreatePost}
+              disabled={isUploading}
+            >
+              <LinearGradient
+                colors={isUploading ? ['#888888', '#666666'] : ['#6C5CE7', '#EC4899']}
+                style={styles.createPostButtonGradient}
+              >
+                {isUploading ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Upload size={20} color="#FFFFFF" />
+                )}
+                <Text style={styles.createPostButtonText}>
+                  {isUploading ? 'Creating Post...' : 'Create Post'}
+                </Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+
+        {/* Action Buttons - Only show when no media is captured */}
+        {!capturedMedia && (
+          <View style={styles.buttonsContainer}>
           {/* Take Photo Button */}
           <AnimatedTouchableOpacity
             style={[styles.actionButton, photoButtonStyle]}
@@ -158,8 +377,11 @@ export default function CreateScreen() {
             </LinearGradient>
           </AnimatedTouchableOpacity>
         </View>
+        )}
 
-        {/* Feature Highlights */}
+        {/* Feature Highlights - Only show when no media is captured */}
+        {!capturedMedia && (
+        <>
         <Animated.View 
           style={styles.featuresContainer}
           entering={FadeIn.delay(600)}
@@ -187,7 +409,11 @@ export default function CreateScreen() {
             Swipe gestures in camera: ← → filters • ↑ Shorts mode
           </Text>
         </Animated.View>
-      </LinearGradient>
+        </>
+        )}
+          </ScrollView>
+        </LinearGradient>
+      </TouchableWithoutFeedback>
       
       {/* Camera Screen Modal */}
       {showCamera && (
@@ -195,6 +421,7 @@ export default function CreateScreen() {
           isVisible={showCamera} 
           onClose={handleCloseCamera}
           initialMode={cameraMode}
+          onMediaCaptured={handleMediaCaptured}
         />
       )}
     </SafeAreaView>
@@ -208,6 +435,13 @@ const styles = StyleSheet.create({
   },
   background: {
     flex: 1,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    paddingBottom: 20,
   },
   header: {
     alignItems: 'center',
@@ -334,6 +568,81 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 18,
     fontWeight: '400',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+  },
+  // Media Preview Styles
+  mediaPreviewContainer: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+  },
+  mediaPreview: {
+    position: 'relative',
+    borderRadius: 16,
+    overflow: 'hidden',
+    marginBottom: 20,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  previewMedia: {
+    width: '100%',
+    height: 300,
+    backgroundColor: '#2A2A2A',
+  },
+  discardButton: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  postInputContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(108, 92, 231, 0.3)',
+    marginBottom: 20,
+  },
+  postInput: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  createPostButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#6C5CE7',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  createPostButtonDisabled: {
+    shadowOpacity: 0.1,
+  },
+  createPostButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    gap: 8,
+  },
+  createPostButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
     fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
   },
 });

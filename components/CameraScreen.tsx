@@ -36,6 +36,8 @@ interface CameraScreenProps {
   isVisible: boolean;
   onClose: () => void;
   initialMode?: 'photo' | 'video';
+  onMediaCaptured?: (asset: { uri: string; type?: string; name?: string }) => void;
+  onPostCreate?: (mediaUri: string, mediaType: 'image' | 'video') => void;
 }
 
 type CameraMode = 'Post' | 'Reel' | 'Story' | 'Shorts';
@@ -88,7 +90,13 @@ const cameraFilters = [
 
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
-export default function CameraScreen({ isVisible, onClose, initialMode = 'video' }: CameraScreenProps) {
+export default function CameraScreen({ 
+  isVisible, 
+  onClose, 
+  initialMode = 'video',
+  onMediaCaptured,
+  onPostCreate 
+}: CameraScreenProps) {
   const [facing, setFacing] = useState<CameraType>('back');
   const [flashMode, setFlashMode] = useState<FlashMode>('off');
   const [permission, requestPermission] = useCameraPermissions();
@@ -253,7 +261,33 @@ export default function CameraScreen({ isVisible, onClose, initialMode = 'video'
             quality: 0.8,
             base64: false,
           });
-          Alert.alert('Photo Captured', `Photo saved: ${photo.uri}`);
+          
+          // Handle the captured photo
+          if (onMediaCaptured) {
+            onMediaCaptured({
+              uri: photo.uri,
+              type: 'image/jpeg',
+              name: `photo-${Date.now()}.jpg`
+            });
+          } else if (onPostCreate) {
+            onPostCreate(photo.uri, 'image');
+          } else {
+            Alert.alert(
+              'Photo Captured!', 
+              'Would you like to create a post with this photo?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { 
+                  text: 'Create Post', 
+                  onPress: () => {
+                    // Navigate to post creation with this image
+                    console.log('Navigate to post creation with:', photo.uri);
+                    onClose();
+                  }
+                }
+              ]
+            );
+          }
         }
       } catch (error) {
         Alert.alert('Error', 'Failed to capture photo');
@@ -278,7 +312,34 @@ export default function CameraScreen({ isVisible, onClose, initialMode = 'video'
           maxDuration: currentMode === 'Shorts' ? 15 : 60,
         });
         
-        console.log('Video recorded:', video?.uri);
+        // Handle the recorded video
+        if (video && video.uri) {
+          if (onMediaCaptured) {
+            onMediaCaptured({
+              uri: video.uri,
+              type: 'video/mp4',
+              name: `video-${Date.now()}.mp4`
+            });
+          } else if (onPostCreate) {
+            onPostCreate(video.uri, 'video');
+          } else {
+            Alert.alert(
+              'Video Recorded!', 
+              'Would you like to create a reel with this video?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { 
+                  text: 'Create Reel', 
+                  onPress: () => {
+                    // Navigate to reel creation with this video
+                    console.log('Navigate to reel creation with:', video.uri);
+                    onClose();
+                  }
+                }
+              ]
+            );
+          }
+        }
       }
     } catch (error) {
       console.error('Recording error:', error);
@@ -332,8 +393,36 @@ export default function CameraScreen({ isVisible, onClose, initialMode = 'video'
       quality: 1,
     });
 
-    if (!result.canceled) {
-      Alert.alert('Import', 'Media import functionality would be implemented here');
+    if (!result.canceled && result.assets?.[0]) {
+      const asset = result.assets[0];
+      
+      // Handle the imported media
+      if (onMediaCaptured) {
+        onMediaCaptured({
+          uri: asset.uri,
+          type: asset.type === 'video' ? 'video/mp4' : 'image/jpeg',
+          name: `imported-${Date.now()}.${asset.type === 'video' ? 'mp4' : 'jpg'}`
+        });
+      } else if (onPostCreate) {
+        onPostCreate(asset.uri, asset.type === 'video' ? 'video' : 'image');
+      } else {
+        const mediaType = asset.type === 'video' ? 'video' : 'photo';
+        Alert.alert(
+          `${mediaType.charAt(0).toUpperCase() + mediaType.slice(1)} Selected!`, 
+          `Would you like to create a ${asset.type === 'video' ? 'reel' : 'post'} with this ${mediaType}?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { 
+              text: `Create ${asset.type === 'video' ? 'Reel' : 'Post'}`, 
+              onPress: () => {
+                // Navigate to creation with this media
+                console.log(`Navigate to ${asset.type === 'video' ? 'reel' : 'post'} creation with:`, asset.uri);
+                onClose();
+              }
+            }
+          ]
+        );
+      }
     }
   };
 

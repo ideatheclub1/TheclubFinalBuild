@@ -13,6 +13,8 @@ import {
   StatusBar,
   Platform,
   ImageBackground,
+  Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
@@ -32,8 +34,8 @@ import Animated, {
   SlideInRight,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { Heart, MessageCircle, Share2, Play, TrendingUp, Eye, Clock } from 'lucide-react-native';
-import { Post, Story } from '../types';
+import { Heart, MessageCircle, Share2, Play, TrendingUp, Eye, Clock, X, Users } from 'lucide-react-native';
+import { Post, Story, User } from '../types';
 import { useComments } from '../contexts/CommentContext';
 import { useUser } from '../contexts/UserContext';
 import { dataService } from '../services/dataService';
@@ -117,6 +119,12 @@ const FeedScreenContent = () => {
   const [selectedPostId, setSelectedPostId] = useState<string>('');
   const flatListRef = useRef<FlatList<Post>>(null);
   
+  // Likes modal state
+  const [showLikesModal, setShowLikesModal] = useState(false);
+  const [selectedPostForLikes, setSelectedPostForLikes] = useState<Post | null>(null);
+  const [likesUsers, setLikesUsers] = useState<User[]>([]);
+  const [isLoadingLikes, setIsLoadingLikes] = useState(false);
+  
   // Animation values
   const scrollY = useSharedValue(0);
   const headerOpacity = useSharedValue(1);
@@ -194,8 +202,33 @@ const FeedScreenContent = () => {
     
     await loadData();
     debug.userAction('Pull to refresh completed');
-    setIsRefreshing(false);
   }, []);
+
+  // Handle showing likes for a post
+  const handleShowLikes = async (post: Post) => {
+    try {
+      debug.userAction('Show likes', { postId: post.id });
+      setIsLoadingLikes(true);
+      setSelectedPostForLikes(post);
+      setShowLikesModal(true);
+      
+      const users = await dataService.post.getPostLikes(post.id, currentUser?.id);
+      setLikesUsers(users);
+      debug.userAction('Likes loaded', { count: users.length });
+    } catch (error) {
+      debugLogger.error('Failed to load likes', (error as Error).message);
+    } finally {
+      setIsLoadingLikes(false);
+    }
+  };
+
+  const handleCloseLikesModal = () => {
+    setShowLikesModal(false);
+    setSelectedPostForLikes(null);
+    setLikesUsers([]);
+  };
+
+
 
   const handleLike = useCallback(async (postId: string) => {
     debug.userAction('Like post', { postId });
@@ -371,10 +404,27 @@ const FeedScreenContent = () => {
     const cardScale = useSharedValue(1);
     const [isLiked, setIsLiked] = useState(post.isLiked);
     const [likes, setLikes] = useState(post.likes);
+    const [isLoadingLikes, setIsLoadingLikes] = useState(false);
 
-    const handlePostLike = () => {
+    // Load actual likes count
+    useEffect(() => {
+      const loadLikesCount = async () => {
+        try {
+          setIsLoadingLikes(true);
+          const likesCount = await dataService.post.getPostLikesCount(post.id);
+          setLikes(likesCount);
+        } catch (error) {
+          console.error('Error loading likes count:', error);
+        } finally {
+          setIsLoadingLikes(false);
+        }
+      };
+
+      loadLikesCount();
+    }, [post.id]);
+
+    const handlePostLike = async () => {
       setIsLiked(!isLiked);
-      setLikes(isLiked ? likes - 1 : likes + 1);
       
       // Heart animation with bounce
       likeScale.value = withSequence(
@@ -382,7 +432,14 @@ const FeedScreenContent = () => {
         withSpring(1, { damping: 8 })
       );
       
+      // Call the like function
       handleLike(post.id);
+      
+      // Update likes count after a short delay
+      setTimeout(async () => {
+        const newLikesCount = await dataService.post.getPostLikesCount(post.id);
+        setLikes(newLikesCount);
+      }, 500);
     };
 
     const handlePostComment = () => {
@@ -516,9 +573,14 @@ const FeedScreenContent = () => {
           </View>
 
           {/* Like Count */}
-          <Text style={[styles.likesText, isLiked && styles.likedText]}>
-            {likes.toLocaleString()} likes
-          </Text>
+          <TouchableOpacity 
+            onPress={() => handleShowLikes(post)}
+            style={styles.likesContainer}
+          >
+            <Text style={[styles.likesText, isLiked && styles.likedText]}>
+              {isLoadingLikes ? 'Loading...' : `${likes.toLocaleString()} likes`}
+            </Text>
+          </TouchableOpacity>
 
           {/* Caption */}
           <View style={styles.captionContainer}>
@@ -723,15 +785,10 @@ const FeedScreenContent = () => {
           />
         }
         contentContainerStyle={styles.feedContent}
-        removeClippedSubviews={true}
+        removeClippedSubviews={Platform.OS !== 'web'}
         maxToRenderPerBatch={3}
         windowSize={5}
         initialNumToRender={2}
-        getItemLayout={(data, index) => ({
-          length: width + 100, // Approximate item height
-          offset: (width + 100) * index,
-          index,
-        })}
       />
 
       {/* Comment System */}
@@ -741,13 +798,88 @@ const FeedScreenContent = () => {
         postId={selectedPostId}
         postType="feed"
       />
+
+      {/* Likes Modal */}
+      <Modal
+        visible={showLikesModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={handleCloseLikesModal}
+        statusBarTranslucent={true}
+      >
+        <View style={styles.modalOverlay}>
+          <Animated.View 
+            style={styles.likesModalContainer}
+            entering={FadeInDown.duration(300).springify().damping(20).stiffness(100)}
+            exiting={FadeInDown.duration(300).springify().damping(20).stiffness(100)}
+          >
+            {/* Header */}
+            <View style={styles.likesModalHeader}>
+              <Text style={styles.likesModalTitle}>
+                {selectedPostForLikes?.user.username}'s post
+              </Text>
+              <TouchableOpacity 
+                onPress={handleCloseLikesModal}
+                style={styles.closeButton}
+              >
+                <X size={24} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Content */}
+            <View style={styles.likesModalContent}>
+              {isLoadingLikes ? (
+                <View style={styles.loadingLikesContainer}>
+                  <ActivityIndicator size="large" color="#6C5CE7" />
+                  <Text style={styles.loadingLikesText}>Loading likes...</Text>
+                </View>
+              ) : likesUsers.length > 0 ? (
+                <FlatList
+                  data={likesUsers}
+                  keyExtractor={(item) => item.id}
+                  renderItem={({ item: user }) => (
+                    <TouchableOpacity 
+                      style={styles.likesUserItem}
+                      onPress={() => {
+                        handleCloseLikesModal();
+                        handleUserPress(user.id);
+                      }}
+                    >
+                      <Image source={{ uri: user.avatar }} style={styles.likesUserAvatar} />
+                      <View style={styles.likesUserInfo}>
+                        <Text style={styles.likesUsername}>@{user.username}</Text>
+                        {user.bio && (
+                          <Text style={styles.likesUserBio} numberOfLines={1}>
+                            {user.bio}
+                          </Text>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  )}
+                  showsVerticalScrollIndicator={false}
+                  removeClippedSubviews={false}
+                  maxToRenderPerBatch={10}
+                  windowSize={5}
+                  initialNumToRender={5}
+                />
+              ) : (
+                <View style={styles.noLikesContainer}>
+                  <Users size={48} color="#666666" />
+                  <Text style={styles.noLikesText}>No likes yet</Text>
+                  <Text style={styles.noLikesSubtext}>Be the first to like this post!</Text>
+                </View>
+              )}
+            </View>
+          </Animated.View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
 
 export default function FeedScreen() {
   return (
-    <SwipeContainer>
+    <SwipeContainer disableGestures={true}>
       <FeedScreenContent />
     </SwipeContainer>
   );
@@ -989,6 +1121,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif-medium',
   },
+  likesContainer: {
+    marginBottom: 12,
+  },
   likedText: {
     color: '#E74C3C',
   },
@@ -1167,5 +1302,109 @@ const styles = StyleSheet.create({
   },
   shortsSpacer: {
     width: 20, // Half visible next item
+  },
+  // Likes Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'flex-end',
+    paddingBottom: Platform.OS === 'ios' ? 34 : 0, // Safe area for iOS
+  },
+  likesModalContainer: {
+    backgroundColor: '#1E1E1E',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: Platform.OS === 'ios' ? '85%' : '80%',
+    minHeight: Platform.OS === 'ios' ? 300 : 250,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 8,
+    marginHorizontal: Platform.OS === 'ios' ? 8 : 0, // Add margin on iOS
+  },
+  likesModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333333',
+  },
+  likesModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif-medium',
+  },
+  closeButton: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  likesModalContent: {
+    flex: 1,
+    paddingHorizontal: 20,
+  },
+  loadingLikesContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  loadingLikesText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    marginTop: 12,
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+  },
+  likesUserItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333333',
+  },
+  likesUserAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    marginRight: 12,
+  },
+  likesUserInfo: {
+    flex: 1,
+  },
+  likesUsername: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 2,
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif-medium',
+  },
+  likesUserBio: {
+    fontSize: 14,
+    color: '#999999',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+  },
+  noLikesContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  noLikesText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginTop: 16,
+    marginBottom: 8,
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif-medium',
+  },
+  noLikesSubtext: {
+    fontSize: 14,
+    color: '#999999',
+    textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
   },
 });
