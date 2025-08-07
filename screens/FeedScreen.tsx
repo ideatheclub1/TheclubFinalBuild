@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   FlatList,
   ScrollView,
   RefreshControl,
@@ -16,6 +15,7 @@ import {
   Modal,
   ActivityIndicator,
 } from 'react-native';
+import SafeAreaWrapper from '@/components/SafeAreaWrapper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { useRouter } from 'expo-router';
@@ -751,7 +751,7 @@ const FeedScreenContent = () => {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaWrapper style={styles.container} backgroundColor="#1E1E1E">
       <StatusBar 
         barStyle="light-content" 
         backgroundColor="#1E1E1E" 
@@ -873,7 +873,7 @@ const FeedScreenContent = () => {
           </Animated.View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </SafeAreaWrapper>
   );
 };
 
