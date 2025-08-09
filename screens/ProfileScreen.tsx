@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
-import { Share2, Settings, Grid2x2 as Grid, Camera, UserPlus, UserMinus, MessageCircle, Crown, DollarSign, Shield, MapPin, Clock, CreditCard as Edit3, Home as Home, TrendingUp, ArrowRight, ArrowLeft, Flag, Bell, Heart, UserCheck, Clock3, X, ChevronLeft, ChevronRight, Trophy, Upload, Users, Award } from 'lucide-react-native';
+import { Share2, Settings, Grid2x2 as Grid, Camera, UserPlus, UserMinus, MessageCircle, Crown, DollarSign, Shield, MapPin, Clock, CreditCard as Edit3, Home as Home, TrendingUp, ArrowRight, ArrowLeft, Flag, Bell, Heart, UserCheck, Clock3, X, ChevronLeft, ChevronRight, Trophy, Upload, Users, Award, Play, Trash2 } from 'lucide-react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
 import * as ImagePicker from 'expo-image-picker';
@@ -30,7 +30,7 @@ import Animated, {
   useAnimatedScrollHandler,
   runOnJS,
 } from 'react-native-reanimated';
-import { Post, User } from '../types';
+import { Post, User, Reel } from '../types';
 import FullScreenPostViewer from '../components/FullScreenPostViewer';
 import BulletinBoardSection from '../components/BulletinBoardSection';
 import { useUser } from '@/contexts/UserContext';
@@ -85,11 +85,14 @@ export default function ProfileScreen({ route }: ProfileScreenProps) {
   
   const [user, setUser] = useState<User | null>(null);
   const [userPosts, setUserPosts] = useState<Post[]>([]);
+  const [userReels, setUserReels] = useState<Reel[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isFollowing, setIsFollowing] = useState(false);
   const [showFullScreenPost, setShowFullScreenPost] = useState(false);
   const [selectedPostIndex, setSelectedPostIndex] = useState(0);
+  const [activeTab, setActiveTab] = useState<'posts' | 'reels'>('posts');
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
   // TODO: Replace with actual cover image from server
   const [coverImage, setCoverImage] = useState('https://images.pexels.com/photos/1181677/pexels-photo-1181677.jpeg?auto=compress&cs=tinysrgb&w=800');
 
@@ -149,15 +152,28 @@ export default function ProfileScreen({ route }: ProfileScreenProps) {
           setError('No user ID available');
         }
 
-        // Fetch user posts only if we have a valid user ID
+        // Fetch user posts and reels only if we have a valid user ID
         if (actualUserId && actualUserId !== '') {
-          debugLogger.process('FETCHING_USER_POSTS', `Fetching posts for user: ${actualUserId}`);
+          debugLogger.process('FETCHING_USER_CONTENT', `Fetching posts and reels for user: ${actualUserId}`);
+          
+          // Fetch posts
           const posts = await dataService.post.getPostsByUser(actualUserId);
           debugLogger.success('USER_POSTS_FETCHED', `Posts fetched successfully`, { userId: actualUserId, postCount: posts.length });
           setUserPosts(posts);
+
+          // Fetch reels
+          try {
+            const reels = await dataService.reel.getReelsByUser(actualUserId);
+            debugLogger.success('USER_REELS_FETCHED', `Reels fetched successfully`, { userId: actualUserId, reelCount: reels.length });
+            setUserReels(reels);
+          } catch (reelError) {
+            debugLogger.error('USER_REELS_FETCH_ERROR', `Failed to fetch reels for user: ${actualUserId}`, { error: reelError });
+            setUserReels([]);
+          }
         } else {
-          debugLogger.log('NO_POSTS_FETCH', 'No user ID available for posts fetch');
+          debugLogger.log('NO_CONTENT_FETCH', 'No user ID available for content fetch');
           setUserPosts([]);
+          setUserReels([]);
         }
 
       } catch (err) {
@@ -316,22 +332,202 @@ export default function ProfileScreen({ route }: ProfileScreenProps) {
     setShowFullScreenPost(true);
   };
 
-  const handleLike = (postId: string) => {
+    const handleLike = (postId: string) => {
     setUserPosts(prevPosts => 
       prevPosts.map(post => 
         post.id === postId 
           ? { 
               ...post, 
-              isLiked: !post.isLiked,
-              likes: post.isLiked ? post.likes - 1 : post.likes + 1
+              isLiked: !post.isLiked, 
+              likes: post.isLiked ? post.likes - 1 : post.likes + 1 
             }
           : post
       )
     );
   };
 
+  const handleDeletePost = (postId: string, postUsername: string) => {
+    console.log('🗑️ DELETE POST CALLED:', { postId, postUsername });
+    debug.userAction('Delete post pressed', { postId });
+    
+    if (!currentUser || !isCurrentUser) {
+      console.log('❌ UNAUTHORIZED DELETE ATTEMPT:', { currentUser: !!currentUser, isCurrentUser });
+      debug.userAction('Unauthorized delete attempt', { postId });
+      Alert.alert('Error', 'You can only delete your own posts.');
+      return;
+    }
+
+    console.log('✅ AUTHORIZATION PASSED, SHOWING CONFIRMATION...');
+
+    // Show confirmation dialog
+    Alert.alert(
+      '🗑️ Delete Post',
+      `Are you sure you want to delete this post?\n\nThis action cannot be undone and will permanently remove the post and all associated comments and likes.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => {
+            console.log('❌ DELETE POST CANCELLED');
+            debug.userAction('Delete post cancelled', { postId });
+            setDeletingItemId(null);
+          }
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              console.log('✅ DELETE POST CONFIRMED, STARTING DELETE...');
+              debug.userAction('Confirming delete post', { postId, userId: currentUser.id });
+              
+              // Show loading state
+              setIsLoading(true);
+              
+              console.log('📞 CALLING dataService.post.deletePost...', { postId, userId: currentUser.id });
+              const success = await dataService.post.deletePost(postId, currentUser.id);
+              console.log('📞 DELETE POST RESULT:', success);
+              
+              if (success) {
+                debug.userAction('Post deleted successfully', { postId });
+                
+                // Update local state immediately
+                setUserPosts(prevPosts => prevPosts.filter(post => post.id !== postId));
+                
+                // Show success feedback
+                Alert.alert(
+                  '✅ Success', 
+                  'Post has been deleted successfully!',
+                  [{ text: 'OK', style: 'default' }]
+                );
+              } else {
+                debug.userAction('Failed to delete post', { postId });
+                Alert.alert(
+                  '❌ Error', 
+                  'Failed to delete post. Please check your connection and try again.',
+                  [{ text: 'OK', style: 'default' }]
+                );
+              }
+            } catch (error) {
+              debug.dbError('post', 'DELETE', { error: (error as Error).message });
+              Alert.alert(
+                '❌ Error', 
+                'An unexpected error occurred while deleting the post. Please try again.',
+                [{ text: 'OK', style: 'default' }]
+              );
+            } finally {
+              setIsLoading(false);
+              setDeletingItemId(null);
+            }
+          }
+        }
+      ],
+      { cancelable: true }
+    );
+  };
+
+  const handleDeleteReel = (reelId: string, reelUsername: string) => {
+    debug.userAction('Delete reel pressed', { reelId });
+    
+    if (!currentUser || !isCurrentUser) {
+      debug.userAction('Unauthorized delete attempt', { reelId });
+      Alert.alert('Error', 'You can only delete your own reels.');
+      return;
+    }
+
+    // Show confirmation dialog
+    Alert.alert(
+      '🎬 Delete Reel',
+      `Are you sure you want to delete this reel?\n\nThis action cannot be undone and will permanently remove the reel and all associated comments, likes, and shares.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => {
+            debug.userAction('Delete reel cancelled', { reelId });
+            setDeletingItemId(null);
+          }
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              debug.userAction('Confirming delete reel', { reelId, userId: currentUser.id });
+              
+              // Show loading state
+              setIsLoading(true);
+              
+              const success = await dataService.reel.deleteReel(reelId, currentUser.id);
+              
+              if (success) {
+                debug.userAction('Reel deleted successfully', { reelId });
+                
+                // Update local state immediately
+                setUserReels(prevReels => prevReels.filter(reel => reel.id !== reelId));
+                
+                // Show success feedback
+                Alert.alert(
+                  '✅ Success', 
+                  'Reel has been deleted successfully!',
+                  [{ text: 'OK', style: 'default' }]
+                );
+              } else {
+                debug.userAction('Failed to delete reel', { reelId });
+                Alert.alert(
+                  '❌ Error', 
+                  'Failed to delete reel. Please check your connection and try again.',
+                  [{ text: 'OK', style: 'default' }]
+                );
+              }
+            } catch (error) {
+              debug.dbError('reel', 'DELETE', { error: (error as Error).message });
+              Alert.alert(
+                '❌ Error', 
+                'An unexpected error occurred while deleting the reel. Please try again.',
+                [{ text: 'OK', style: 'default' }]
+              );
+            } finally {
+              setIsLoading(false);
+              setDeletingItemId(null);
+            }
+          }
+        }
+      ],
+      { cancelable: true }
+    );
+  };
+
   const handleComment = (postId: string) => {
     Alert.alert('Comment', 'Comment functionality would be implemented here');
+  };
+
+  // Debug test function to verify delete functionality
+  const handleDebugTest = () => {
+    console.log('🔥 STARTING DEBUG TEST FROM PROFILE SCREEN...');
+    
+    // Test debug logger
+    debug.test();
+    
+    // Test data service access
+    console.log('📊 DataService available:', !!dataService);
+    console.log('📊 Post service available:', !!dataService?.post);
+    console.log('📊 Reel service available:', !!dataService?.reel);
+    console.log('📊 Delete post method available:', typeof dataService?.post?.deletePost);
+    console.log('📊 Delete reel method available:', typeof dataService?.reel?.deleteReel);
+    
+    // Test current user
+    console.log('👤 Current user:', currentUser?.id || 'No user');
+    console.log('👤 Is current user:', isCurrentUser);
+    console.log('👤 User posts count:', userPosts.length);
+    console.log('👤 User reels count:', userReels.length);
+    
+    // Test a simple alert
+    Alert.alert(
+      '🧪 Debug Test Results',
+      `DataService: ${!!dataService ? '✅' : '❌'}\nCurrent User: ${currentUser?.id || 'None'}\nPosts: ${userPosts.length}\nReels: ${userReels.length}`,
+      [{ text: 'OK' }]
+    );
   };
 
   const handleRegisterAsHost = () => {
@@ -458,6 +654,14 @@ export default function ProfileScreen({ route }: ProfileScreenProps) {
                   setUser(userProfile);
                   const posts = await dataService.post.getPostsByUser(actualUserId);
                   setUserPosts(posts);
+                  
+                  try {
+                    const reels = await dataService.reel.getReelsByUser(actualUserId);
+                    setUserReels(reels);
+                  } catch (reelError) {
+                    debugLogger.error('REFRESH_REELS_ERROR', 'Failed to refresh reels', { error: reelError });
+                    setUserReels([]);
+                  }
                 }
               } catch (err) {
                 setError('Failed to load user data');
@@ -474,30 +678,146 @@ export default function ProfileScreen({ route }: ProfileScreenProps) {
     );
   }
 
-  const renderPost = ({ item, index }: { item: Post; index: number }) => (
-    <TouchableOpacity
-      style={[styles.gridItem, { marginRight: (index + 1) % 3 === 0 ? 0 : 6 }]}
-      onPress={() => handlePostPress(item)}
-    >
-      {item.image ? (
-        <Image source={{ uri: item.image }} style={styles.gridImage} />
-      ) : (
-        <LinearGradient
-          colors={['rgba(108, 92, 231, 0.15)', 'rgba(108, 92, 231, 0.05)']}
-          style={styles.gridPlaceholder}
+  const renderPost = ({ item, index }: { item: Post; index: number }) => {
+    const handlePostItemPress = () => {
+      if (deletingItemId !== item.id) {
+        handlePostPress(item);
+      }
+      // Reset deleting state after interaction
+      if (deletingItemId === item.id) {
+        setDeletingItemId(null);
+      }
+    };
+
+    const handleDeletePress = () => {
+      console.log('🔥 DELETE BUTTON PRESSED IN RENDERPOST:', { itemId: item.id, username: item.user.username });
+      console.log('🔥 Current User:', currentUser?.id);
+      console.log('🔥 Is Current User:', isCurrentUser);
+      setDeletingItemId(item.id);
+      handleDeletePost(item.id, item.user.username);
+    };
+
+    return (
+      <TouchableOpacity
+        style={[styles.gridItem, { marginRight: (index + 1) % 3 === 0 ? 0 : 6 }]}
+        onPress={handlePostItemPress}
+        activeOpacity={0.8}
+      >
+        {item.image ? (
+          <ImageBackground source={{ uri: item.image }} style={styles.gridImage} imageStyle={styles.gridImageStyle}>
+            {/* Delete Button - Only show for current user */}
+            {isCurrentUser && (
+              <TouchableOpacity
+                style={styles.deleteButton}
+                onPress={handleDeletePress}
+                activeOpacity={0.8}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Trash2 size={16} color="#FFFFFF" strokeWidth={2.5} />
+              </TouchableOpacity>
+            )}
+            
+            <View style={styles.likeCountOverlay}>
+              <Heart size={12} color="#FFFFFF" fill="#FFFFFF" />
+              <Text style={styles.likeCountText}>{item.likes}</Text>
+            </View>
+          </ImageBackground>
+        ) : (
+          <LinearGradient
+            colors={['rgba(108, 92, 231, 0.15)', 'rgba(108, 92, 231, 0.05)']}
+            style={styles.gridPlaceholder}
+          >
+            {/* Delete Button - Only show for current user */}
+            {isCurrentUser && (
+              <TouchableOpacity
+                style={styles.deleteButton}
+                onPress={handleDeletePress}
+                activeOpacity={0.7}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Trash2 size={14} color="#FF6B6B" strokeWidth={2} />
+              </TouchableOpacity>
+            )}
+            
+            <Text style={styles.gridPlaceholderText} numberOfLines={3}>
+              {item.content}
+            </Text>
+            
+            <View style={styles.likeCountOverlay}>
+              <Heart size={12} color="#FFFFFF" fill="#FFFFFF" />
+              <Text style={styles.likeCountText}>{item.likes}</Text>
+            </View>
+          </LinearGradient>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderReel = ({ item, index }: { item: Reel; index: number }) => {
+    const handleReelItemPress = () => {
+      if (deletingItemId !== item.id) {
+        // Navigate to reels screen with this specific reel
+        router.push({
+          pathname: '/(tabs)/reels',
+          params: { startReelId: item.id }
+        });
+      }
+      // Reset deleting state after interaction
+      if (deletingItemId === item.id) {
+        setDeletingItemId(null);
+      }
+    };
+
+    const handleDeletePress = () => {
+      console.log('🔥 DELETE BUTTON PRESSED IN RENDERREEL:', { itemId: item.id, username: item.user?.username });
+      console.log('🔥 Current User:', currentUser?.id);
+      console.log('🔥 Is Current User:', isCurrentUser);
+      setDeletingItemId(item.id);
+      handleDeleteReel(item.id, item.user?.username || '');
+    };
+
+    return (
+      <TouchableOpacity
+        style={[styles.gridItem, { marginRight: (index + 1) % 3 === 0 ? 0 : 6 }]}
+        onPress={handleReelItemPress}
+        activeOpacity={0.8}
+      >
+        <ImageBackground 
+          source={{ uri: item.thumbnailUrl || 'https://images.pexels.com/photos/1181677/pexels-photo-1181677.jpeg?auto=compress&cs=tinysrgb&w=400' }} 
+          style={styles.gridImage} 
+          imageStyle={styles.gridImageStyle}
         >
-          <Text style={styles.gridPlaceholderText} numberOfLines={3}>
-            {item.content}
-          </Text>
-        </LinearGradient>
-      )}
-      
-      <View style={styles.likeCountOverlay}>
-        <Heart size={12} color="#FFFFFF" fill="#FFFFFF" />
-        <Text style={styles.likeCountText}>{item.likes}</Text>
-      </View>
-    </TouchableOpacity>
-  );
+          {/* Play Icon Overlay */}
+          <View style={styles.reelPlayOverlay}>
+            <Play size={20} color="#FFFFFF" fill="#FFFFFF" />
+          </View>
+
+          {/* Delete Button - Only show for current user */}
+          {isCurrentUser && (
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={handleDeletePress}
+              activeOpacity={0.8}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <Trash2 size={16} color="#FFFFFF" strokeWidth={2.5} />
+            </TouchableOpacity>
+          )}
+
+          {/* View Count and Duration */}
+          <View style={styles.reelStatsOverlay}>
+            <View style={styles.viewCountBadge}>
+              <Play size={8} color="#FFFFFF" fill="#FFFFFF" />
+              <Text style={styles.viewCountText}>{item.viewCount || 0}</Text>
+            </View>
+            <View style={styles.durationBadge}>
+              <Text style={styles.durationText}>{item.duration}s</Text>
+            </View>
+          </View>
+        </ImageBackground>
+      </TouchableOpacity>
+    );
+  };
 
   const renderFlags = (rating: number) => {
     const flagColors = ['#FF4B4B', '#FF914D', '#FFC107', '#A3D977', '#4CAF50'];
@@ -649,6 +969,22 @@ export default function ProfileScreen({ route }: ProfileScreenProps) {
               </Text>
               <Text style={[styles.statLabel, { fontFamily: 'Inter_400Regular' }]}>Posts</Text>
             </View>
+            <View style={styles.statItem}>
+              <Text style={[styles.statNumber, styles.statReels, { fontFamily: 'Inter_700Bold' }]}>
+                {userReels.length}
+              </Text>
+              <Text style={[styles.statLabel, { fontFamily: 'Inter_400Regular' }]}>Reels</Text>
+            </View>
+            {/* Debug Test Button */}
+            {isCurrentUser && (
+              <TouchableOpacity 
+                style={styles.debugButton}
+                onPress={handleDebugTest}
+              >
+                <Text style={styles.debugButtonText}>🔧</Text>
+              </TouchableOpacity>
+            )}
+          </View>
             <TouchableOpacity 
               style={styles.statItem}
               onPress={() => router.push(`/followers-following?userId=${user?.id}&tab=followers`)}
@@ -750,59 +1086,109 @@ export default function ProfileScreen({ route }: ProfileScreenProps) {
               </View>
             )}
           </View>
-        </View>
 
-        {/* Professional Bulletin Board */}
-        <BulletinBoardSection isCurrentUser={isCurrentUser} />
+          {/* Professional Bulletin Board */}
+          <BulletinBoardSection isCurrentUser={isCurrentUser} />
 
-        {/* Reviews Section */}
-        <ReviewsSection 
-          user={user} 
-          onRefresh={() => {
-            // Refresh user data to get updated trust score
-            const refreshUserData = async () => {
-              try {
-                const userProfile = await dataService.user.getUserProfile(actualUserId);
-                if (userProfile) {
-                  setUser(userProfile);
+          {/* Reviews Section */}
+          {user && (
+            <ReviewsSection 
+              user={user} 
+              onRefresh={() => {
+              // Refresh user data to get updated trust score
+              const refreshUserData = async () => {
+                try {
+                  const userProfile = await dataService.user.getUserProfile(actualUserId);
+                  if (userProfile) {
+                    setUser(userProfile);
+                  }
+                } catch (err) {
+                  console.error('Error refreshing user data:', err);
                 }
-              } catch (err) {
-                console.error('Error refreshing user data:', err);
-              }
-            };
-            refreshUserData();
-          }}
-        />
+              };
+              refreshUserData();
+            }}
+          />
+          )}
 
-        {/* Clean Posts Grid */}
-        <View style={styles.postsSection}>
-          <View style={styles.postsHeader}>
-            <Grid size={22} color="#FFFFFF" />
-            <Text style={[styles.postsHeaderText, { fontFamily: 'Inter_600SemiBold' }]}>
-              Posts
-            </Text>
+          {/* Content Section with Tabs */}
+          <View style={styles.postsSection}>
+          {/* Tab Navigation */}
+          <View style={styles.tabContainer}>
+            <TouchableOpacity
+              style={[styles.tabButton, activeTab === 'posts' && styles.activeTabButton]}
+              onPress={() => setActiveTab('posts')}
+            >
+              <Grid size={18} color={activeTab === 'posts' ? "#6C5CE7" : "#999999"} />
+              <Text style={[
+                styles.tabText, 
+                activeTab === 'posts' && styles.activeTabText,
+                { fontFamily: 'Inter_600SemiBold' }
+              ]}>
+                Posts ({userPosts.length})
+              </Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={[styles.tabButton, activeTab === 'reels' && styles.activeTabButton]}
+              onPress={() => setActiveTab('reels')}
+            >
+              <Play size={18} color={activeTab === 'reels' ? "#6C5CE7" : "#999999"} />
+              <Text style={[
+                styles.tabText, 
+                activeTab === 'reels' && styles.activeTabText,
+                { fontFamily: 'Inter_600SemiBold' }
+              ]}>
+                Reels ({userReels.length})
+              </Text>
+            </TouchableOpacity>
           </View>
 
-          {userPosts.length > 0 ? (
-            <FlatList
-              data={userPosts}
-              renderItem={renderPost}
-              numColumns={3}
-              scrollEnabled={false}
-              contentContainerStyle={styles.postsGrid}
-              columnWrapperStyle={styles.row}
-            />
+          {/* Content Grid */}
+          {activeTab === 'posts' ? (
+            userPosts.length > 0 ? (
+              <FlatList
+                data={userPosts}
+                renderItem={renderPost}
+                numColumns={3}
+                scrollEnabled={false}
+                contentContainerStyle={styles.postsGrid}
+                columnWrapperStyle={styles.row}
+              />
+            ) : (
+              <View style={styles.emptyState}>
+                <Grid size={48} color="#666666" />
+                <Text style={[styles.emptyText, { fontFamily: 'Inter_600SemiBold' }]}>
+                  No posts yet
+                </Text>
+                <Text style={[styles.emptySubtext, { fontFamily: 'Inter_400Regular' }]}>
+                  {isCurrentUser ? 'Share your creative work' : `${user?.username || 'User'} hasn't posted yet`}
+                </Text>
+              </View>
+            )
           ) : (
-            <View style={styles.emptyState}>
-              <Text style={[styles.emptyText, { fontFamily: 'Inter_600SemiBold' }]}>
-                No posts yet
-              </Text>
-              <Text style={[styles.emptySubtext, { fontFamily: 'Inter_400Regular' }]}>
-                {isCurrentUser ? 'Share your creative work' : `${user?.username || 'User'} hasn't posted yet`}
-              </Text>
-            </View>
+            userReels.length > 0 ? (
+              <FlatList
+                data={userReels}
+                renderItem={renderReel}
+                numColumns={3}
+                scrollEnabled={false}
+                contentContainerStyle={styles.postsGrid}
+                columnWrapperStyle={styles.row}
+              />
+            ) : (
+              <View style={styles.emptyState}>
+                <Play size={48} color="#666666" />
+                <Text style={[styles.emptyText, { fontFamily: 'Inter_600SemiBold' }]}>
+                  No reels yet
+                </Text>
+                <Text style={[styles.emptySubtext, { fontFamily: 'Inter_400Regular' }]}>
+                  {isCurrentUser ? 'Create your first reel' : `${user?.username || 'User'} hasn't shared any reels yet`}
+                </Text>
+              </View>
+            )
           )}
-        </View>
+          </View>
       </Animated.ScrollView>
 
       {/* Full Screen Post Viewer */}
@@ -1032,6 +1418,9 @@ const styles = StyleSheet.create({
   },
   statPosts: {
     color: '#6C5CE7', // Royal Purple
+  },
+  statReels: {
+    color: '#E74C3C', // Red for reels
   },
   statFollowers: {
     color: '#FFD700', // Gold
@@ -1307,5 +1696,127 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '600',
+  },
+  
+  // Tab Navigation Styles
+  tabContainer: {
+    flexDirection: 'row',
+    marginBottom: 24,
+    backgroundColor: '#2A2A2A',
+    borderRadius: 12,
+    padding: 4,
+  },
+  tabButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    gap: 8,
+  },
+  activeTabButton: {
+    backgroundColor: '#6C5CE7',
+    shadowColor: '#6C5CE7',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  tabText: {
+    fontSize: 14,
+    color: '#999999',
+    fontWeight: '600',
+  },
+  activeTabText: {
+    color: '#FFFFFF',
+  },
+  
+  // Delete Button Styles
+  deleteButton: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 20,
+    borderWidth: 2,
+    borderColor: '#FF6B6B',
+    shadowColor: '#FF6B6B',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  
+  // Grid Image Styles
+  gridImageStyle: {
+    borderRadius: 16,
+  },
+  
+  // Reel Specific Styles
+  reelPlayOverlay: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: [{ translateX: -10 }, { translateY: -10 }],
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reelStatsOverlay: {
+    position: 'absolute',
+    bottom: 6,
+    left: 6,
+    right: 6,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+  },
+  viewCountBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    gap: 2,
+  },
+  viewCountText: {
+    fontSize: 9,
+    color: '#FFFFFF',
+    fontWeight: '500',
+  },
+  durationBadge: {
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  durationText: {
+    fontSize: 9,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  debugButton: {
+    backgroundColor: '#FF6B6B',
+    borderRadius: 15,
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 10,
+  },
+  debugButtonText: {
+    fontSize: 14,
+    color: '#FFFFFF',
   },
 });

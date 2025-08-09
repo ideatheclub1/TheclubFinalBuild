@@ -18,7 +18,12 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#6C5CE7"
-      }
+      },
+      "softwareKeyboardLayoutMode": "pan",
+      "navigationBarColor": "#1E1E1E",
+      "navigationBarDividerColor": "#6C5CE7",
+      "statusBarColor": "#1E1E1E",
+      "statusBarStyle": "light"
     },
     "web": {
       "bundler": "metro",
