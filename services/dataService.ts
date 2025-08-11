@@ -48,12 +48,20 @@ const base64ToUint8Array = (base64: string): Uint8Array => {
 };
 
 const readUriToUint8Array = async (uri: string): Promise<Uint8Array> => {
+<<<<<<< HEAD
   debugLogger.log('STORAGE', 'READ_URI_START', `Reading file from URI: ${uri}`);
+=======
+  debugLogger.info('STORAGE', 'READ_URI_START', `Reading file from URI: ${uri}`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
   
   // Method 1: Try FileSystem first for React Native file URIs
   if (uri.startsWith('file://') || uri.startsWith('content://') || uri.startsWith('ph://')) {
     try {
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'READ_URI_FILESYSTEM', 'Using FileSystem for native URI');
+=======
+      debugLogger.info('STORAGE', 'READ_URI_FILESYSTEM', 'Using FileSystem for native URI');
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
       const base64 = await FileSystem.readAsStringAsync(uri, { 
         encoding: FileSystem.EncodingType.Base64 
       });
@@ -63,7 +71,11 @@ const readUriToUint8Array = async (uri: string): Promise<Uint8Array> => {
       }
       
       const u8 = base64ToUint8Array(base64);
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'READ_URI_SUCCESS', `FileSystem read successful: ${u8.byteLength} bytes`);
+=======
+      debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `FileSystem read successful: ${u8.byteLength} bytes`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
       
       if (u8.byteLength > 0) return u8;
       throw new Error('Converted Uint8Array is empty');
@@ -75,7 +87,11 @@ const readUriToUint8Array = async (uri: string): Promise<Uint8Array> => {
   
   // Method 2: Try fetch for web URIs and some native URIs
   try {
+<<<<<<< HEAD
     debugLogger.log('STORAGE', 'READ_URI_FETCH', 'Using fetch for URI');
+=======
+    debugLogger.info('STORAGE', 'READ_URI_FETCH', 'Using fetch for URI');
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
     const resp = await fetch(uri);
     
     if (!resp.ok) {
@@ -84,7 +100,11 @@ const readUriToUint8Array = async (uri: string): Promise<Uint8Array> => {
     
     const ab = await resp.arrayBuffer();
     const u8 = new Uint8Array(ab);
+<<<<<<< HEAD
     debugLogger.log('STORAGE', 'READ_URI_SUCCESS', `Fetch read successful: ${u8.byteLength} bytes`);
+=======
+    debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `Fetch read successful: ${u8.byteLength} bytes`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
     
     if (u8.byteLength > 0) return u8;
     throw new Error('Fetched ArrayBuffer is empty');
@@ -95,9 +115,15 @@ const readUriToUint8Array = async (uri: string): Promise<Uint8Array> => {
   // Method 3: Last resort - try to read as data URI
   if (uri.startsWith('data:')) {
     try {
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'READ_URI_DATA', 'Processing data URI');
       const u8 = base64ToUint8Array(uri);
       debugLogger.log('STORAGE', 'READ_URI_SUCCESS', `Data URI read successful: ${u8.byteLength} bytes`);
+=======
+      debugLogger.info('STORAGE', 'READ_URI_DATA', 'Processing data URI');
+      const u8 = base64ToUint8Array(uri);
+      debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `Data URI read successful: ${u8.byteLength} bytes`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
       
       if (u8.byteLength > 0) return u8;
     } catch (dataError) {
@@ -2162,7 +2188,11 @@ export const storageService = {
         throw new Error('Missing required parameters: file.uri or userId');
       }
       
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'UPLOAD_IMAGE_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
+=======
+      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
       
       // Generate unique filename
       const timestamp = Date.now();
@@ -2171,7 +2201,11 @@ export const storageService = {
       const fileName = `${userId}/${folder}/${timestamp}.${extension}`;
 
       // Convert file URI to binary data
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'UPLOAD_IMAGE_READ', `Reading file from: ${file.uri}`);
+=======
+      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_READ', `Reading file from: ${file.uri}`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
       const uint8Array = await readUriToUint8Array(file.uri);
       
       // Validate file size
@@ -2179,7 +2213,11 @@ export const storageService = {
         throw new Error('File is empty (0 bytes)');
       }
       
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'UPLOAD_IMAGE_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
+=======
+      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
 
       // Upload to Supabase storage using Uint8Array
       const { data, error } = await supabase.storage
@@ -2205,7 +2243,11 @@ export const storageService = {
         .getPublicUrl(fileName);
 
       debug.apiSuccess('storage', 'uploadImage', { url: publicUrl, path: fileName }, Date.now() - startTime);
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'UPLOAD_SUCCESS', `Image uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
+=======
+      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Image uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
       
       return { url: publicUrl, path: fileName };
     } catch (error) {
@@ -2233,7 +2275,11 @@ export const storageService = {
         throw new Error('Missing required parameters: file.uri or userId');
       }
       
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'UPLOAD_VIDEO_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
+=======
+      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
       
       // Generate unique filename
       const timestamp = Date.now();
@@ -2242,7 +2288,11 @@ export const storageService = {
       const fileName = `${userId}/${folder}/${timestamp}.${extension}`;
 
       // Convert file URI to binary data
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'UPLOAD_VIDEO_READ', `Reading file from: ${file.uri}`);
+=======
+      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_READ', `Reading file from: ${file.uri}`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
       const uint8Array = await readUriToUint8Array(file.uri);
       
       // Validate file size
@@ -2250,7 +2300,11 @@ export const storageService = {
         throw new Error('Video file is empty (0 bytes)');
       }
       
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'UPLOAD_VIDEO_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
+=======
+      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
 
       // Upload using Uint8Array to avoid 0-byte issues on native
       const { data, error } = await supabase.storage
@@ -2276,7 +2330,11 @@ export const storageService = {
         .getPublicUrl(fileName);
 
       debug.apiSuccess('storage', 'uploadVideo', { url: publicUrl, path: fileName }, Date.now() - startTime);
+<<<<<<< HEAD
       debugLogger.log('STORAGE', 'UPLOAD_SUCCESS', `Video uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
+=======
+      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Video uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
+>>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
       
       return { url: publicUrl, path: fileName };
     } catch (error) {
