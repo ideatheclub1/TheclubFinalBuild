@@ -14,7 +14,6 @@ import {
   StatusBar,
   Platform,
   ImageBackground,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
@@ -33,8 +32,6 @@ import Animated, {
 import * as Haptics from 'expo-haptics';
 import { Flame, ListFilter as Filter, Heart, X, Play, Eye, Clock } from 'lucide-react-native';
 import { useDebugLogger, debug } from '@/utils/debugLogger';
-import { reelService } from '../services/dataService';
-import { Reel } from '../types';
 
 const { width } = Dimensions.get('window');
 
@@ -55,91 +52,130 @@ const trendingStyles = ['Likes', 'Shares', 'Velocity', 'Comments'];
 
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
-interface TrendingReel extends Reel {
+interface TrendingPost {
+  id: string;
+  videoUrl: string;
+  thumbnailUrl: string;
+  duration: string;
+  likes: number;
+  views: number;
+  isTrending: boolean;
+  isLiked: boolean;
   aspectRatio: number; // For masonry layout
   genre: string;
 }
 
-// Helper function to convert reels to trending format
-const convertReelToTrending = (reel: Reel): TrendingReel => ({
-  ...reel,
-  aspectRatio: 0.8 + (Math.random() * 1.2), // Random between 0.8 and 2.0 for masonry layout
-  genre: getGenreFromHashtags(reel.hashtags || []),
-  views: reel.viewCount || 0,
-});
-
-// Helper function to extract genre from hashtags
-const getGenreFromHashtags = (hashtags: string[]): string => {
-  const genreMap: { [key: string]: string } = {
-    fitness: 'Fitness',
-    music: 'Music',
-    ai: 'AI',
-    crypto: 'Crypto',
-    coding: 'Coding',
-    gaming: 'Gaming',
-    film: 'Film',
-    fashion: 'Fashion',
-    art: 'Art',
-    travel: 'Travel',
-    tech: 'Tech',
-  };
-
-  for (const hashtag of hashtags) {
-    const cleanTag = hashtag.replace('#', '').toLowerCase();
-    if (genreMap[cleanTag]) {
-      return genreMap[cleanTag];
-    }
-  }
-  
-  return 'All'; // Default genre
-};
+// Mock data with varied aspect ratios for masonry effect
+const mockTrendingPosts: TrendingPost[] = [
+  {
+    id: '1',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    thumbnailUrl: 'https://images.pexels.com/photos/1181677/pexels-photo-1181677.jpeg?auto=compress&cs=tinysrgb&w=400',
+    duration: '45s',
+    likes: 15420,
+    views: 125600,
+    isTrending: true,
+    isLiked: false,
+    aspectRatio: 1.4, // Taller
+    genre: 'AI',
+  },
+  {
+    id: '2',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
+    thumbnailUrl: 'https://images.pexels.com/photos/1181244/pexels-photo-1181244.jpeg?auto=compress&cs=tinysrgb&w=400',
+    duration: '22s',
+    likes: 8930,
+    views: 42300,
+    isTrending: false,
+    isLiked: true,
+    aspectRatio: 1.0, // Square
+    genre: 'Music',
+  },
+  {
+    id: '3',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+    thumbnailUrl: 'https://images.pexels.com/photos/1181263/pexels-photo-1181263.jpeg?auto=compress&cs=tinysrgb&w=400',
+    duration: '18s',
+    likes: 24500,
+    views: 89200,
+    isTrending: true,
+    isLiked: false,
+    aspectRatio: 0.8, // Shorter/wider
+    genre: 'Fitness',
+  },
+  {
+    id: '4',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
+    thumbnailUrl: 'https://images.pexels.com/photos/1181271/pexels-photo-1181271.jpeg?auto=compress&cs=tinysrgb&w=400',
+    duration: '31s',
+    likes: 12800,
+    views: 67500,
+    isTrending: false,
+    isLiked: false,
+    aspectRatio: 1.6, // Very tall
+    genre: 'Travel',
+  },
+  {
+    id: '5',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
+    thumbnailUrl: 'https://images.pexels.com/photos/1181276/pexels-photo-1181276.jpeg?auto=compress&cs=tinysrgb&w=400',
+    duration: '28s',
+    likes: 19700,
+    views: 156400,
+    isTrending: true,
+    isLiked: true,
+    aspectRatio: 1.2,
+    genre: 'Gaming',
+  },
+  {
+    id: '6',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4',
+    thumbnailUrl: 'https://images.pexels.com/photos/1181519/pexels-photo-1181519.jpeg?auto=compress&cs=tinysrgb&w=400',
+    duration: '16s',
+    likes: 7650,
+    views: 34200,
+    isTrending: false,
+    isLiked: false,
+    aspectRatio: 0.9,
+    genre: 'Fashion',
+  },
+  // Add more posts for variety
+  ...Array.from({ length: 20 }, (_, i) => ({
+    id: `${7 + i}`,
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    thumbnailUrl: `https://images.pexels.com/photos/${1181200 + (i * 17)}/pexels-photo-${1181200 + (i * 17)}.jpeg?auto=compress&cs=tinysrgb&w=400`,
+    duration: `${15 + (i % 40)}s`,
+    likes: Math.floor(Math.random() * 50000) + 1000,
+    views: Math.floor(Math.random() * 200000) + 5000,
+    isTrending: Math.random() > 0.7,
+    isLiked: Math.random() > 0.5,
+    aspectRatio: 0.8 + (Math.random() * 1.2), // Random between 0.8 and 2.0
+    genre: genres[Math.floor(Math.random() * genres.length)],
+  })),
+];
 
 export default function TrendingScreen() {
   const debugLogger = useDebugLogger('TrendingScreen');
   const router = useRouter();
-  const [trendingReels, setTrendingReels] = useState<TrendingReel[]>([]);
+  const [trendingPosts, setTrendingPosts] = useState<TrendingPost[]>(mockTrendingPosts);
   const [selectedGenre, setSelectedGenre] = useState('All');
   const [showFilterModal, setShowFilterModal] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [filters, setFilters] = useState({
-    contentType: 'Reel',
+    contentType: 'All',
     date: 'Today',
     region: 'Global',
     trendingStyle: 'Likes',
   });
 
-  // Load trending reels from backend
-  const loadTrendingReels = useCallback(async () => {
-    try {
-      setIsLoading(true);
-      debug.dbQuery('trending_reels', 'LOAD', { selectedGenre });
-      
-      const reels = await reelService.getTrendingReels(50, 0);
-      const trendingReelsData = reels.map(convertReelToTrending);
-      
-      setTrendingReels(trendingReelsData);
-      debug.dbSuccess('trending_reels', 'LOAD', { count: trendingReelsData.length });
-    } catch (error) {
-      debug.dbError('trending_reels', 'LOAD', { error: (error as Error).message });
-    } finally {
-      setIsLoading(false);
-    }
-  }, [selectedGenre]);
-
-  // Load trending reels on mount
-  useEffect(() => {
-    loadTrendingReels();
-  }, [loadTrendingReels]);
-
   // Debug: Page load
   useEffect(() => {
     debug.pageLoad('Trending screen loaded', { 
-      reelsCount: trendingReels.length,
+      postsCount: trendingPosts.length,
       selectedGenre,
       filters 
     });
-  }, [trendingReels.length]);
+  }, []);
 
   const scrollY = useSharedValue(0);
   const filterGlow = useSharedValue(0);
@@ -191,42 +227,33 @@ export default function TrendingScreen() {
     };
   });
 
-  const handleLike = useCallback(async (reelId: string) => {
-    debug.userAction('Like trending reel', { reelId });
+  const handleLike = useCallback((postId: string) => {
+    debug.userAction('Like trending post', { postId });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    
-    try {
-      await reelService.toggleLike(reelId);
-      setTrendingReels(prevReels =>
-        prevReels.map(reel =>
-          reel.id === reelId
-            ? { 
-                ...reel, 
-                isLiked: !reel.isLiked, 
-                likes: reel.isLiked ? reel.likes - 1 : reel.likes + 1 
-              }
-            : reel
-        )
-      );
-    } catch (error) {
-      debug.dbError('trending_reel_like', 'TOGGLE', { error: (error as Error).message });
-    }
-  }, []);
+    setTrendingPosts(prevPosts =>
+      prevPosts.map(post =>
+        post.id === postId
+          ? { 
+              ...post, 
+              isLiked: !post.isLiked, 
+              likes: post.isLiked ? post.likes - 1 : post.likes + 1 
+            }
+          : post
+      )
+    );
+    debug.userAction('Trending post like updated', { postId, newLikes: trendingPosts.find(p => p.id === postId)?.likes });
+  }, [trendingPosts]);
 
-  const handleRefresh = useCallback(async () => {
-    debug.userAction('Refresh trending reels', { currentReelsCount: trendingReels.length });
+  const handleRefresh = useCallback(() => {
+    debug.userAction('Refresh trending posts', { currentPostsCount: trendingPosts.length });
     setIsRefreshing(true);
-    
-    try {
-      await loadTrendingReels();
-      debug.userAction('Trending reels refreshed', { newReelsCount: trendingReels.length });
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    } catch (error) {
-      debug.dbError('trending_reels', 'REFRESH', { error: (error as Error).message });
-    } finally {
+    // Simulate refresh
+    setTimeout(() => {
       setIsRefreshing(false);
-    }
-  }, [loadTrendingReels, trendingReels.length]);
+      debug.userAction('Trending posts refreshed', { newPostsCount: trendingPosts.length });
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }, 1000);
+  }, [trendingPosts.length]);
 
   const handleGenreSelect = useCallback((genre: string) => {
     debug.userAction('Select genre filter', { previousGenre: selectedGenre, newGenre: genre });
@@ -240,26 +267,11 @@ export default function TrendingScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   }, [filters]);
 
-  const handleReelPress = useCallback((reel: TrendingReel) => {
-    debug.userAction('Press trending reel', { reelId: reel.id, genre: reel.genre, hashtags: reel.hashtags });
+  const handlePostPress = useCallback((post: TrendingPost) => {
+    debug.userAction('Press trending post', { postId: post.id, genre: post.genre });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    
-    // Navigate to reels tab with hashtag context
-    // Store hashtags in AsyncStorage or pass via navigation params
-    if (reel.hashtags && reel.hashtags.length > 0) {
-      // Navigate to reels tab with specific hashtags
-      router.push({
-        pathname: '/(tabs)/reels',
-        params: { 
-          hashtags: JSON.stringify(reel.hashtags),
-          startReelId: reel.id 
-        }
-      });
-    } else {
-      // Navigate to regular reels tab
-      router.push('/(tabs)/reels');
-    }
-  }, [router]);
+    // Handle post press - could navigate to full screen video player
+  }, []);
 
   const formatNumber = (num: number) => {
     if (num >= 1000000) {
@@ -270,11 +282,11 @@ export default function TrendingScreen() {
     return num.toString();
   };
 
-  const filteredReels = selectedGenre === 'All' 
-    ? trendingReels 
-    : trendingReels.filter(reel => reel.genre === selectedGenre);
+  const filteredPosts = selectedGenre === 'All' 
+    ? trendingPosts 
+    : trendingPosts.filter(post => post.genre === selectedGenre);
 
-  const ReelItem = React.memo(({ reel, index, section = 'trending' }: { reel: TrendingReel; index: number; section?: string }) => {
+  const PostItem = React.memo(({ post, index, section = 'trending' }: { post: TrendingPost; index: number; section?: string }) => {
     const scale = useSharedValue(1);
     const opacity = useSharedValue(1);
 
@@ -290,12 +302,12 @@ export default function TrendingScreen() {
     };
 
     const handlePress = () => {
-      handleReelPress(reel);
+      handlePostPress(post);
     };
 
     const handleLikePress = (e: any) => {
       e.stopPropagation();
-      handleLike(reel.id);
+      handleLike(post.id);
     };
 
     const animatedStyle = useAnimatedStyle(() => ({
@@ -303,7 +315,7 @@ export default function TrendingScreen() {
       opacity: opacity.value,
     }));
 
-    const itemHeight = ITEM_WIDTH * reel.aspectRatio;
+    const itemHeight = ITEM_WIDTH * post.aspectRatio;
 
     return (
       <AnimatedTouchableOpacity
@@ -323,7 +335,7 @@ export default function TrendingScreen() {
         activeOpacity={0.9}
       >
         <ImageBackground
-          source={{ uri: reel.thumbnailUrl || 'https://images.pexels.com/photos/1181677/pexels-photo-1181677.jpeg?auto=compress&cs=tinysrgb&w=400' }}
+          source={{ uri: post.thumbnailUrl }}
           style={styles.postBackground}
           imageStyle={styles.postImage}
         >
@@ -351,16 +363,16 @@ export default function TrendingScreen() {
               >
                 <Heart
                   size={14}
-                  color={reel.isLiked ? '#E74C3C' : '#EAEAEA'}
-                  fill={reel.isLiked ? '#E74C3C' : 'transparent'}
+                  color={post.isLiked ? '#E74C3C' : '#EAEAEA'}
+                  fill={post.isLiked ? '#E74C3C' : 'transparent'}
                 />
               </TouchableOpacity>
-              <Text style={styles.statText}>{formatNumber(reel.likes)}</Text>
+              <Text style={styles.statText}>{formatNumber(post.likes)}</Text>
             </View>
             
             <View style={styles.statItem}>
               <Eye size={12} color="#999999" />
-              <Text style={styles.statTextMuted}>{formatNumber(reel.views)}</Text>
+              <Text style={styles.statTextMuted}>{formatNumber(post.views)}</Text>
             </View>
           </View>
         </ImageBackground>
@@ -385,43 +397,38 @@ export default function TrendingScreen() {
 
   // Create masonry layout data
   const masonryData = React.useMemo(() => {
-    const leftColumn: TrendingReel[] = [];
-    const rightColumn: TrendingReel[] = [];
+    const leftColumn: TrendingPost[] = [];
+    const rightColumn: TrendingPost[] = [];
     let leftHeight = 0;
     let rightHeight = 0;
 
-    filteredReels.forEach((reel, index) => {
-      const itemHeight = ITEM_WIDTH * reel.aspectRatio;
+    filteredPosts.forEach((post, index) => {
+      const itemHeight = ITEM_WIDTH * post.aspectRatio;
       
       if (leftHeight <= rightHeight) {
-        leftColumn.push(reel);
+        leftColumn.push(post);
         leftHeight += itemHeight + PADDING;
       } else {
-        rightColumn.push(reel);
+        rightColumn.push(post);
         rightHeight += itemHeight + PADDING;
       }
     });
 
     return { leftColumn, rightColumn };
-  }, [filteredReels]);
+  }, [filteredPosts]);
 
-  const renderMasonryColumn = (columnData: TrendingReel[], columnIndex: number) => (
+  const renderMasonryColumn = (columnData: TrendingPost[], columnIndex: number) => (
     <View style={styles.masonryColumn}>
-      {columnData.map((reel, index) => (
-        <ReelItem key={reel.id} reel={reel} index={columnIndex} section="trending" />
+      {columnData.map((post, index) => (
+        <PostItem key={post.id} post={post} index={columnIndex} section="trending" />
       ))}
     </View>
   );
 
-  if (!fontsLoaded || isLoading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#6C5CE7" />
-        <Text style={styles.loadingText}>
-          {!fontsLoaded ? 'Loading fonts...' : 'Loading trending reels...'}
-        </Text>
-      </View>
-    );
+  if (!fontsLoaded) {
+    return <View style={styles.loadingContainer}>
+        <Text style={styles.loadingText}>Loading...</Text>
+      </View>;
   }
 
   return (

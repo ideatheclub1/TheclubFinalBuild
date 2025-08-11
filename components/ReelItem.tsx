@@ -13,7 +13,6 @@ import {
 import { Video, ResizeMode } from 'expo-av';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -26,7 +25,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
-import { Heart, MessageCircle, Share2, Bookmark, Music, Volume2, VolumeX, Play, Pause, Trash2 } from 'lucide-react-native';
+import { Heart, MessageCircle, Share2, Bookmark, Music, Volume2, VolumeX, Play, Pause } from 'lucide-react-native';
 import { Reel } from '../data/mockReels';
 import { useComments } from '../contexts/CommentContext';
 import CommentSystem from './CommentSystem';
@@ -41,7 +40,6 @@ interface ReelItemProps {
   onSave: (reelId: string) => void;
   onComment: (reelId: string) => void;
   onShare: (reelId: string) => void;
-  onDelete?: (reelId: string, reelUsername: string) => void;
 }
 
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
@@ -53,7 +51,6 @@ export default function ReelItem({
   onSave,
   onComment,
   onShare,
-  onDelete,
 }: ReelItemProps) {
   const router = useRouter();
   const { user: currentUser } = useUser();
@@ -98,19 +95,6 @@ export default function ReelItem({
       videoRef.current?.pauseAsync();
     }
   }, [isActive]);
-
-  // Pause video when screen loses focus
-  useFocusEffect(
-    React.useCallback(() => {
-      return () => {
-        // Pause video when component unmounts or screen loses focus
-        if (videoRef.current) {
-          videoRef.current.pauseAsync();
-          setIsPlaying(false);
-        }
-      };
-    }, [])
-  );
 
   const handleUserPress = () => {
     if (!reel?.user?.id || !currentUser?.id) return;
@@ -387,18 +371,6 @@ export default function ReelItem({
               </View>
             </TouchableOpacity>
           </Animated.View>
-
-          {/* Delete Button - Only show for reel owner */}
-          {currentUser && reel.user && reel.user.id === currentUser.id && onDelete && (
-            <TouchableOpacity
-              style={[styles.actionButton, styles.deleteActionButton]}
-              onPress={() => onDelete(reel.id, reel.user?.username || '')}
-            >
-              <View style={[styles.actionIconContainer, styles.deleteIconContainer]}>
-                <Trash2 size={20} color="#FF6B6B" strokeWidth={2} />
-              </View>
-            </TouchableOpacity>
-          )}
         </View>
 
         {/* Music info - Bottom right */}
@@ -594,16 +566,6 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0, 0, 0, 0.8)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
-  },
-  deleteActionButton: {
-    marginTop: 8,
-  },
-  deleteIconContainer: {
-    backgroundColor: 'rgba(255, 107, 107, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 107, 107, 0.3)',
-    shadowColor: '#FF6B6B',
-    shadowOpacity: 0.4,
   },
   musicContainer: {
     position: 'absolute',
