@@ -15,9 +15,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { 
   Bug, X, Trash2, Download, Filter, Search, 
-  Info, AlertTriangle, CheckCircle, Clock, Activity 
+  Info, AlertTriangle, CheckCircle, Clock, Activity, Video 
 } from 'lucide-react-native';
 import { debugLogger, DebugLog } from '@/utils/debugLogger';
+import { supabase } from '@/app/lib/supabase';
+import ThumbnailTestComponent from './ThumbnailTestComponent';
 
 const { width, height } = Dimensions.get('window');
 
@@ -31,6 +33,7 @@ export default function DebugPanel({ visible, onClose }: DebugPanelProps) {
   const [filterLevel, setFilterLevel] = useState<'ALL' | 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS' | 'PROCESS'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
+  const [showThumbnailTest, setShowThumbnailTest] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
 
   // Update logs every 500ms
@@ -106,6 +109,68 @@ export default function DebugPanel({ visible, onClose }: DebugPanelProps) {
     );
   };
 
+  const deleteSpecificPosts = async () => {
+    const postIds = [
+      '22e869de-c158-4e59-a4b4-20a3e3f3944c',
+      '25322aa4-aec6-4e79-a179-20ec83900932'
+    ];
+
+    Alert.alert(
+      'Delete Posts',
+      `Are you sure you want to delete these 2 specific posts?\n\nIDs:\n${postIds.join('\n')}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete', 
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // First, let's try to run the fix for the trigger issue
+              debugLogger.log('Attempting to fix database triggers...');
+              
+              // Try to delete posts one by one to avoid trigger issues
+              let deletedCount = 0;
+              
+              for (const postId of postIds) {
+                try {
+                  // Delete related data first to avoid trigger issues
+                  await supabase.from('likes').delete().eq('post_id', postId);
+                  await supabase.from('comments').delete().eq('post_id', postId);
+                  await supabase.from('post_hashtags').delete().eq('post_id', postId);
+                  
+                  // Now delete the post
+                  const { error: postError } = await supabase
+                    .from('posts')
+                    .delete()
+                    .eq('id', postId);
+                    
+                  if (postError) {
+                    debugLogger.error('Failed to delete post', { postId, error: postError.message });
+                  } else {
+                    deletedCount++;
+                    debugLogger.log('Post deleted successfully', { postId });
+                  }
+                } catch (error) {
+                  debugLogger.error('Error deleting post', { postId, error });
+                }
+              }
+
+              if (deletedCount > 0) {
+                Alert.alert('Success', `Deleted ${deletedCount} out of ${postIds.length} posts successfully!`);
+              } else {
+                Alert.alert('Error', 'Failed to delete any posts. Check debug logs for details.');
+              }
+              
+            } catch (error) {
+              Alert.alert('Error', `Unexpected error: ${error}`);
+              debugLogger.error('Delete posts error', { error });
+            }
+          }
+        }
+      ]
+    );
+  };
+
   const exportLogs = () => {
     const logData = debugLogger.exportLogs();
     // In a real app, you'd save this to a file or share it
@@ -131,6 +196,7 @@ export default function DebugPanel({ visible, onClose }: DebugPanelProps) {
   );
 
   return (
+    <>
     <Modal
       visible={visible}
       animationType="slide"
@@ -168,6 +234,20 @@ export default function DebugPanel({ visible, onClose }: DebugPanelProps) {
                 <Download size={20} color="#6B7280" />
               </TouchableOpacity>
               
+              <TouchableOpacity 
+                style={styles.headerButton}
+                onPress={() => setShowThumbnailTest(true)}
+              >
+                <Video size={20} color="#8B5CF6" />
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.headerButton}
+                onPress={deleteSpecificPosts}
+              >
+                <Trash2 size={20} color="#F59E0B" />
+              </TouchableOpacity>
+
               <TouchableOpacity 
                 style={styles.headerButton}
                 onPress={clearLogs}
@@ -259,6 +339,16 @@ export default function DebugPanel({ visible, onClose }: DebugPanelProps) {
         </LinearGradient>
       </SafeAreaView>
     </Modal>
+
+    {/* Thumbnail Test Modal */}
+    <Modal
+      visible={showThumbnailTest}
+      animationType="slide"
+      presentationStyle="fullScreen"
+    >
+      <ThumbnailTestComponent onClose={() => setShowThumbnailTest(false)} />
+    </Modal>
+    </>
   );
 }
 

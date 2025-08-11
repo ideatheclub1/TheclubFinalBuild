@@ -5,11 +5,13 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { View, ActivityIndicator, StyleSheet, TouchableOpacity } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { CommentProvider } from '@/contexts/CommentContext';
 import { UserProvider } from '@/contexts/UserContext';
 import DebugAuth from '@/components/DebugAuth';
 import DebugPanel from '@/components/DebugPanel';
+import NavigationDebug from '@/components/NavigationDebug';
 import { Bug } from 'lucide-react-native';
 
 export default function RootLayout() {
@@ -17,9 +19,10 @@ export default function RootLayout() {
   const [showDebugPanel, setShowDebugPanel] = useState(false);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <UserProvider>
-        <CommentProvider>
+    <SafeAreaProvider>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <UserProvider>
+          <CommentProvider>
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="index" />
             <Stack.Screen name="login" />
@@ -78,9 +81,13 @@ export default function RootLayout() {
             visible={showDebugPanel} 
             onClose={() => setShowDebugPanel(false)} 
           />
+          
+          {/* Navigation Debug - Remove this after testing */}
+          <NavigationDebug />
         </CommentProvider>
       </UserProvider>
     </GestureHandlerRootView>
+    </SafeAreaProvider>
   );
 }
 

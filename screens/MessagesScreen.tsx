@@ -6,12 +6,14 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  SafeAreaView,
   Alert,
   Platform,
   Dimensions,
   Animated as RNAnimated,
+  RefreshControl,
+  TextInput,
 } from 'react-native';
+import SafeAreaWrapper from '@/components/SafeAreaWrapper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { useRouter } from 'expo-router';
@@ -36,6 +38,7 @@ import { mockConversations, mockUsers } from '../data/mockData';
 import { Conversation, User } from '../types';
 import { useUser } from '@/contexts/UserContext';
 import { useDebugLogger, debug } from '@/utils/debugLogger';
+import { useMessaging } from '@/hooks/useMessagingSimple';
 
 const { width, height } = Dimensions.get('window');
 const SWIPE_THRESHOLD = 80;
@@ -231,16 +234,44 @@ export default function MessagesScreen() {
   const debugLogger = useDebugLogger('MessagesScreen');
   const router = useRouter();
   const { user: currentUser } = useUser();
-  const [conversations, setConversations] = useState<Conversation[]>(mockConversations);
+  const { 
+    conversations, 
+    loading, 
+    error, 
+    isConnected,
+    loadConversations,
+    createConversation,
+    clearError 
+  } = useMessaging();
+  
   const [onlineUsers, setOnlineUsers] = useState<User[]>(mockUsers.slice(0, 6));
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filteredConversations, setFilteredConversations] = useState<Conversation[]>([]);
 
   // Debug: Page load
   useEffect(() => {
     debug.pageLoad('Messages screen loaded', { 
       conversationsCount: conversations.length,
-      onlineUsersCount: onlineUsers.length 
+      onlineUsersCount: onlineUsers.length,
+      isConnected
     });
-  }, []);
+  }, [conversations.length, onlineUsers.length, isConnected]);
+
+  // Filter conversations based on search query
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setFilteredConversations(conversations);
+    } else {
+      const filtered = conversations.filter(conv => 
+        conv.participants.some(participant => 
+          participant.username?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          participant.fullName?.toLowerCase().includes(searchQuery.toLowerCase())
+        ) ||
+        conv.lastMessage.content.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+      setFilteredConversations(filtered);
+    }
+  }, [conversations, searchQuery]);
   
   // FAB Animation
   const fabScale = useSharedValue(1);
@@ -259,13 +290,14 @@ export default function MessagesScreen() {
   }, []);
 
   const handleConversationPress = (conversation: Conversation) => {
-    const otherUser = conversation.participants.find(p => p.id !== '1');
-    if (otherUser) {
-      router.push({
-        pathname: '/conversation',
-        params: { userId: otherUser.id, userName: otherUser.username }
-      });
-    }
+    router.push({
+      pathname: '/conversation',
+      params: { 
+        conversationId: conversation.id,
+        userId: conversation.participants[0]?.id || '',
+        userName: conversation.participants[0]?.username || ''
+      }
+    });
   };
 
   const handleUserPress = (userId: string) => {
@@ -288,18 +320,66 @@ export default function MessagesScreen() {
     });
   };
 
-  const handleNewMessage = () => {
+  const handleNewMessage = async () => {
     fabScale.value = withSequence(
       withSpring(0.9, { damping: 15 }),
       withSpring(1, { damping: 15 })
     );
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Alert.alert('New Message', 'Select a user to start a new conversation');
+    
+    // Navigate to search screen to select a user
+    router.push('/(tabs)/search');
   };
 
   const handleSearch = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push('/(tabs)/search');
+    // Simple search toggle - for web compatibility
+    Alert.alert(
+      'Search Conversations',
+      'Type in the search box above to filter conversations by username or message content.',
+      [
+        { text: 'OK', style: 'default' },
+        { 
+          text: 'Clear Search', 
+          onPress: () => setSearchQuery(''),
+          style: 'destructive'
+        }
+      ]
+    );
+  };
+
+  const handleRefresh = async () => {
+    try {
+      await loadConversations();
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch (err) {
+      debugLogger.error('MESSAGES', 'REFRESH_ERROR', 'Failed to refresh conversations', err);
+    }
+  };
+
+  const startConversationWithUser = async (userId: string) => {
+    if (!currentUser?.id) return;
+    
+    try {
+      debugLogger.process('MESSAGES', 'START_CONVERSATION', `Starting conversation with user: ${userId}`);
+      
+      const conversationId = await createConversation([userId]);
+      
+      if (conversationId) {
+        router.push({
+          pathname: '/conversation',
+          params: { 
+            conversationId,
+            userId,
+          }
+        });
+      } else {
+        Alert.alert('Error', 'Failed to create conversation');
+      }
+    } catch (err) {
+      debugLogger.error('MESSAGES', 'START_CONVERSATION_ERROR', 'Failed to start conversation', err);
+      Alert.alert('Error', 'Failed to start conversation');
+    }
   };
 
   const fabAnimatedStyle = useAnimatedStyle(() => ({
@@ -354,7 +434,7 @@ export default function MessagesScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaWrapper style={styles.container} backgroundColor="#1E1E1E">
       <LinearGradient
         colors={['#1E1E1E', '#301E5A', '#1E1E1E']}
         style={styles.background}
@@ -368,9 +448,19 @@ export default function MessagesScreen() {
                 <Text style={styles.headerTitle}>Messages</Text>
               </View>
               
-              <TouchableOpacity onPress={handleSearch} style={styles.searchButton}>
-                <Search size={24} color="#FFFFFF" />
-              </TouchableOpacity>
+              <View style={styles.searchContainer}>
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Search conversations..."
+                  placeholderTextColor="#999999"
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  returnKeyType="search"
+                />
+                <TouchableOpacity onPress={handleSearch} style={styles.searchButton}>
+                  <Search size={20} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         </Animated.View>
@@ -395,15 +485,45 @@ export default function MessagesScreen() {
 
         {/* Messages List */}
         <View style={styles.messagesSection}>
-          <Text style={styles.sectionTitle}>Recent</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>
+              {searchQuery ? `Search Results (${filteredConversations.length})` : 'Recent'}
+            </Text>
+            {!isConnected && (
+              <View style={styles.connectionStatus}>
+                <Text style={styles.connectionText}>Offline</Text>
+              </View>
+            )}
+          </View>
           
-          {conversations.length > 0 ? (
+          {error && (
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorText}>{error}</Text>
+              <TouchableOpacity onPress={clearError} style={styles.dismissButton}>
+                <Text style={styles.dismissText}>Dismiss</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          
+          {loading ? (
+            <View style={styles.loadingContainer}>
+              <Text style={styles.loadingText}>Loading conversations...</Text>
+            </View>
+          ) : filteredConversations.length > 0 ? (
             <ScrollView
               style={styles.messagesList}
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.messagesContent}
+              refreshControl={
+                <RNAnimated.RefreshControl
+                  refreshing={loading}
+                  onRefresh={handleRefresh}
+                  tintColor="#6C5CE7"
+                  colors={['#6C5CE7']}
+                />
+              }
             >
-              {conversations.map((conversation, index) => (
+              {filteredConversations.map((conversation, index) => (
                 <MessageCard
                   key={conversation.id}
                   conversation={conversation}
@@ -431,7 +551,7 @@ export default function MessagesScreen() {
           </LinearGradient>
         </AnimatedTouchableOpacity>
       </LinearGradient>
-    </SafeAreaView>
+    </SafeAreaWrapper>
   );
 }
 
@@ -475,12 +595,29 @@ const styles = StyleSheet.create({
     marginLeft: 12,
     fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif-medium',
   },
-  searchButton: {
-    padding: 12,
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
     borderRadius: 24,
     borderWidth: 1,
     borderColor: 'rgba(108, 92, 231, 0.3)',
+    paddingLeft: 16,
+    flex: 1,
+    marginLeft: 16,
+  },
+  searchInput: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 16,
+    paddingVertical: 12,
+    paddingRight: 8,
+  },
+  searchButton: {
+    padding: 8,
+    backgroundColor: 'rgba(108, 92, 231, 0.3)',
+    borderRadius: 20,
+    marginRight: 4,
   },
   onlineSection: {
     paddingVertical: 16,
@@ -767,5 +904,52 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 2,
     borderColor: 'rgba(108, 92, 231, 0.5)',
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  connectionStatus: {
+    backgroundColor: 'rgba(255, 107, 107, 0.2)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FF6B6B',
+  },
+  connectionText: {
+    color: '#FF6B6B',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  errorContainer: {
+    backgroundColor: 'rgba(255, 107, 107, 0.1)',
+    borderLeftWidth: 4,
+    borderLeftColor: '#FF6B6B',
+    padding: 12,
+    marginBottom: 16,
+    borderRadius: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  errorText: {
+    color: '#FF6B6B',
+    fontSize: 14,
+    flex: 1,
+  },
+  dismissButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(255, 107, 107, 0.2)',
+    borderRadius: 6,
+    marginLeft: 12,
+  },
+  dismissText: {
+    color: '#FF6B6B',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
