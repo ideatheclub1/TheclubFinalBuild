@@ -9,7 +9,6 @@ import {
   Alert,
   ScrollView,
   Platform,
-  Pressable,
   PanResponder,
   LayoutChangeEvent,
 } from 'react-native';
@@ -30,7 +29,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
-import { Heart, MessageCircle, Share2, Bookmark, Music, Volume2, VolumeX, Play, Trash2, Pause, Trash } from 'lucide-react-native';
+import { Heart, MessageCircle, Share2, Bookmark, Music, Volume2, VolumeX, Play, Trash2 } from 'lucide-react-native';
 import { Reel } from '../data/mockReels';
 import { useComments } from '../contexts/CommentContext';
 import CommentSystem from './CommentSystem';
@@ -89,14 +88,8 @@ export default function ReelItem({
   const [duration, setDuration] = useState(0);
   const [uiPosition, setUiPosition] = useState(0);         // what the UI shows
   const [isSeeking, setIsSeeking] = useState(false);
-  const [seekPosition, setSeekPosition] = useState(0);     // live pointer while dragging
-  const wasPlayingBeforeSeekRef = useRef(false);
-  const timelineWidthRef = useRef(0);
 
-  // Interpolation refs for smooth progress while playing
-  const lastStatusPosRef = useRef(0);
-  const lastStatusTsRef = useRef(0);
-  const rafRef = useRef<number | null>(null);
+  const timelineWidthRef = useRef(0);
 
   const { getCommentCount } = useComments();
   const commentCount = getCommentCount(reel.id);
@@ -111,6 +104,7 @@ export default function ReelItem({
   const heartExplosion = useSharedValue(0);
   const musicPulse = useSharedValue(1);
   const playButtonOpacity = useSharedValue(0);
+  const lastPlayToggleTsRef = useRef(0);
 
   // Kick off / stop playback when this item becomes active/inactive
   useEffect(() => {
@@ -147,38 +141,7 @@ export default function ReelItem({
     }, [])
   );
 
-  // Smooth progress loop using requestAnimationFrame
-  const stopRaf = useCallback(() => {
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-  }, []);
-
-  const tick = useCallback(() => {
-    // Only interpolate when playing and not seeking
-    if (isPlaying && !isSeeking && duration > 0) {
-      const now = Date.now();
-      const elapsed = now - lastStatusTsRef.current;
-      const estimated = lastStatusPosRef.current + elapsed;
-      const clamped = Math.min(Math.max(0, estimated), duration);
-      setUiPosition(clamped);
-      rafRef.current = requestAnimationFrame(tick);
-    } else {
-      stopRaf();
-    }
-  }, [duration, isPlaying, isSeeking, stopRaf]);
-
-  useEffect(() => {
-    if (isPlaying && !isSeeking) {
-      // restart loop when we resume play
-      stopRaf();
-      rafRef.current = requestAnimationFrame(tick);
-    } else {
-      stopRaf();
-    }
-    return stopRaf;
-  }, [isPlaying, isSeeking, tick, stopRaf]);
+  // No RAF smoothing; rely on playback status or active scrubbing to drive UI
 
   // Playback status updates from expo-av
   const onStatus = useCallback((status: AVPlaybackStatus) => {
@@ -189,17 +152,10 @@ export default function ReelItem({
     const dur = status.durationMillis ?? 0;
     if (dur !== duration) setDuration(dur);
 
-    // Track last "authoritative" position & time
-    const pos = status.positionMillis ?? 0;
-    lastStatusPosRef.current = pos;
-    lastStatusTsRef.current = Date.now();
-
-    // Only let AV updates drive the UI when not seeking
+    // Update UI position from video only when not actively seeking
     if (!isSeeking) {
+      const pos = status.positionMillis ?? 0;
       setUiPosition(pos);
-    } else {
-      // When seeking is done, sync the position
-      console.log('Status update during seeking:', { pos, isSeeking });
     }
   }, [duration, isSeeking]);
 
@@ -282,16 +238,22 @@ export default function ReelItem({
   };
 
   const handlePlayPause = async () => {
+    const now = Date.now();
+    if (now - lastPlayToggleTsRef.current < 200) return;
+    lastPlayToggleTsRef.current = now;
+
     if (isPlaying) {
       await videoRef.current?.pauseAsync();
       setIsPlaying(false);
-      playButtonOpacity.value = withTiming(1, { duration: 180 });
     } else {
       await videoRef.current?.playAsync();
       setIsPlaying(true);
-      playButtonOpacity.value = withTiming(0, { duration: 180 });
     }
   };
+
+  useEffect(() => {
+    playButtonOpacity.value = withTiming(isPlaying ? 0 : 1, { duration: 180 });
+  }, [isPlaying, playButtonOpacity]);
 
   const handleVolumeToggle = () => {
     setIsMuted((m) => !m);
@@ -308,31 +270,15 @@ export default function ReelItem({
   const seekTo = useCallback(
     async (ms: number) => {
       if (!videoRef.current || duration <= 0) return;
-
       const clamped = clampMs(ms);
-      console.log('Seeking to:', clamped, 'ms (', formatTime(clamped), ')');
-
       try {
-        // First try the standard seek method
         await videoRef.current.setPositionAsync(clamped);
-        console.log('Seek completed to:', clamped, 'ms');
-        
-        // sync refs/UI immediately
-        lastStatusPosRef.current = clamped;
-        lastStatusTsRef.current = Date.now();
-        setUiPosition(clamped);
-      } catch (err) {
-        console.log('Standard seek failed, trying fallback...');
-        // Fallback method
-        try {
-          await videoRef.current.playFromPositionAsync(clamped);
-          await videoRef.current.pauseAsync();
-          lastStatusPosRef.current = clamped;
-          lastStatusTsRef.current = Date.now();
-          setUiPosition(clamped);
-          console.log('Fallback seek completed to:', clamped, 'ms');
-        } catch (fallbackErr) {
-          console.error('Both seek methods failed:', fallbackErr);
+      } catch (err: any) {
+        // Ignore rapid-move interruption errors during scrubbing
+        const message = String(err?.message || err);
+        if (!message.toLowerCase().includes('interrupted')) {
+          // Swallow other errors silently during move
+          // console.error('Seek error:', err);
         }
       }
     },
@@ -344,23 +290,21 @@ export default function ReelItem({
     timelineWidthRef.current = e.nativeEvent.layout.width;
   };
 
-  // Tap to seek
-  const handleTimelinePress = async (evt: any) => {
-    if (duration <= 0) return;
-    const width = timelineWidthRef.current || 1;
-    const x = Math.max(0, Math.min(evt.nativeEvent.locationX, width));
-    const progress = x / width;
-    const target = progress * duration;
-
-    wasPlayingBeforeSeekRef.current = isPlaying;
-    setIsSeeking(true);
-    await videoRef.current?.pauseAsync();
-    await seekTo(target);
-    if (wasPlayingBeforeSeekRef.current) {
-      await videoRef.current?.playAsync();
-    }
-    setIsSeeking(false);
-  };
+  // Map touch X to target ms and seek
+  const seekFromTouchX = useCallback(
+    (locationX: number) => {
+      if (duration <= 0) return;
+      const width = timelineWidthRef.current || 1;
+      const x = Math.max(0, Math.min(locationX, width));
+      const progress = x / width;
+      const target = clampMs(progress * duration);
+      // Update UI immediately while scrubbing
+      setUiPosition(target);
+      // Fire-and-forget seek to avoid piling up awaits during rapid moves
+      void seekTo(target);
+    },
+    [clampMs, duration, seekTo]
+  );
 
   // Drag to seek (PanResponder)
   const panResponder = useMemo(
@@ -368,68 +312,25 @@ export default function ReelItem({
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
-        onPanResponderGrant: async (evt) => {
+        onPanResponderGrant: (evt) => {
           try {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           } catch {}
-          if (duration <= 0) return;
-
-          wasPlayingBeforeSeekRef.current = isPlaying;
           setIsSeeking(true);
-          await videoRef.current?.pauseAsync();
-
-          const width = timelineWidthRef.current || 1;
-          const x = Math.max(0, Math.min(evt.nativeEvent.locationX, width));
-          const progress = x / width;
-          const newPos = clampMs(progress * duration);
-          console.log('Seek start:', { touchX: x, timelineWidth: width, progress, newPosition: newPos, duration });
-          setSeekPosition(newPos);
-          // Don't update uiPosition during drag to prevent flickering
+          seekFromTouchX(evt.nativeEvent.locationX);
         },
         onPanResponderMove: (evt) => {
-          if (duration <= 0) return;
-          const width = timelineWidthRef.current || 1;
-          const x = Math.max(0, Math.min(evt.nativeEvent.locationX, width));
-          const progress = x / width;
-          const newPos = clampMs(progress * duration);
-          setSeekPosition(newPos);
-          // Don't update uiPosition during drag to prevent flickering
+          seekFromTouchX(evt.nativeEvent.locationX);
         },
-        onPanResponderRelease: async (evt) => {
-          if (duration <= 0) return;
-
-          const width = timelineWidthRef.current || 1;
-          const x = Math.max(0, Math.min(evt.nativeEvent.locationX, width));
-          const progress = x / width;
-          const finalPos = clampMs(progress * duration);
-          console.log('Seek release:', { touchX: x, timelineWidth: width, progress, finalPosition: finalPos, duration });
-
-          try {
-            // do the actual seek
-            await seekTo(finalPos);
-          } finally {
-            // small delay gives AV a breath to land the frame
-            setTimeout(async () => {
-              if (wasPlayingBeforeSeekRef.current) {
-                await videoRef.current?.playAsync();
-              }
-              setIsSeeking(false);
-              try {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              } catch {}
-            }, 60);
-          }
+        onPanResponderRelease: () => {
+          setIsSeeking(false);
         },
         onPanResponderTerminationRequest: () => false,
         onPanResponderTerminate: () => {
-          // Gesture cancelled — attempt to resume previous state
           setIsSeeking(false);
-          if (wasPlayingBeforeSeekRef.current) {
-            videoRef.current?.playAsync();
-          }
         },
       }),
-    [clampMs, duration, isPlaying, seekTo]
+    [seekFromTouchX]
   );
 
   // Gestures (tap vs double tap)
@@ -483,11 +384,7 @@ export default function ReelItem({
     setTimeout(() => setShowMusicInfo(false), 3000);
   };
 
-  useEffect(() => {
-    return () => {
-      stopRaf();
-    };
-  }, [stopRaf]);
+  // No special cleanup needed for seeking timers
 
   return (
     <>
@@ -641,10 +538,6 @@ export default function ReelItem({
             >
               <View
                 style={styles.timelineWrapper}
-                // Tap to seek
-                onStartShouldSetResponder={() => true}
-                onResponderGrant={handleTimelinePress}
-                // Drag to seek
                 {...panResponder.panHandlers}
               >
                 <View style={styles.timelineTrack}>
@@ -657,7 +550,7 @@ export default function ReelItem({
                             ? Math.max(
                                 0,
                                 Math.min(
-                                  (isSeeking ? seekPosition : uiPosition) / duration,
+                                  uiPosition / duration,
                                   1
                                 )
                               ) * (timelineWidthRef.current || 0)
@@ -674,7 +567,7 @@ export default function ReelItem({
                             ? Math.max(
                                 0,
                                 Math.min(
-                                  (isSeeking ? seekPosition : uiPosition) / duration,
+                                  uiPosition / duration,
                                   1
                                 )
                               ) * (timelineWidthRef.current || 0) - 6
@@ -685,7 +578,7 @@ export default function ReelItem({
                 </View>
                 <View style={styles.timeLabels}>
                   <Text style={styles.timeText}>
-                    {formatTime(isSeeking ? seekPosition : uiPosition)}
+                    {formatTime(uiPosition)}
                   </Text>
                   <Text style={styles.timeText}>{formatTime(duration)}</Text>
                 </View>
@@ -792,7 +685,7 @@ const styles = StyleSheet.create({
   },
   rightActions: {
     position: 'absolute',
-    right: 16,
+    right: 10,
     top: '50%',
     marginTop: -120,
     alignItems: 'center',
@@ -800,21 +693,20 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     alignItems: 'center',
-    gap: 6,
+    gap: 1,
   },
   actionIconContainer: {
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    width: 40, height: 30, borderRadius: 20,
+    backgroundColor: 'transparent',
     justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3, shadowRadius: 4, elevation: 4,
+    shadowOpacity: 0, elevation: 0,
   },
   actionText: {
     fontSize: 11, color: '#FFFFFF', fontWeight: '600',
     textShadowColor: 'rgba(0, 0, 0, 0.8)', textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
   },
-  deleteActionButton: { marginTop: 8 },
+  deleteActionButton: { marginTop: 2 },
   deleteIconContainer: {
     backgroundColor: 'rgba(255, 107, 107, 0.15)',
     borderWidth: 1, borderColor: 'rgba(255, 107, 107, 0.3)',
