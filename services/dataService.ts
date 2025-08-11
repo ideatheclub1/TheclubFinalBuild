@@ -5,6 +5,110 @@ import {
 } from '@/types';
 import { calculateDistance } from '@/utils/distanceCalculator';
 import { debug, debugLogger } from '@/utils/debugLogger';
+import * as FileSystem from 'expo-file-system';
+
+// =====================================================
+// FILE HELPERS
+// =====================================================
+
+const base64ToUint8Array = (base64: string): Uint8Array => {
+  const cleaned = base64.replace(/^data:.*;base64,/, '');
+  
+  // Use native atob if available (web), otherwise use manual conversion
+  let binaryString: string;
+  if (typeof atob !== 'undefined') {
+    binaryString = atob(cleaned);
+  } else {
+    // Manual base64 decode for React Native
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let result = '';
+    let i = 0;
+    
+    while (i < cleaned.length) {
+      const encoded1 = chars.indexOf(cleaned[i++]);
+      const encoded2 = chars.indexOf(cleaned[i++]);
+      const encoded3 = chars.indexOf(cleaned[i++]);
+      const encoded4 = chars.indexOf(cleaned[i++]);
+      
+      const bitmap = (encoded1 << 18) | (encoded2 << 12) | (encoded3 << 6) | encoded4;
+      
+      result += String.fromCharCode((bitmap >> 16) & 255);
+      if (encoded3 !== 64) result += String.fromCharCode((bitmap >> 8) & 255);
+      if (encoded4 !== 64) result += String.fromCharCode(bitmap & 255);
+    }
+    binaryString = result;
+  }
+  
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i += 1) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+};
+
+const readUriToUint8Array = async (uri: string): Promise<Uint8Array> => {
+  debugLogger.info('STORAGE', 'READ_URI_START', `Reading file from URI: ${uri}`);
+  
+  // Method 1: Try FileSystem first for React Native file URIs
+  if (uri.startsWith('file://') || uri.startsWith('content://') || uri.startsWith('ph://')) {
+    try {
+      debugLogger.info('STORAGE', 'READ_URI_FILESYSTEM', 'Using FileSystem for native URI');
+      const base64 = await FileSystem.readAsStringAsync(uri, { 
+        encoding: FileSystem.EncodingType.Base64 
+      });
+      
+      if (!base64 || base64.length === 0) {
+        throw new Error('Empty base64 string from FileSystem');
+      }
+      
+      const u8 = base64ToUint8Array(base64);
+      debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `FileSystem read successful: ${u8.byteLength} bytes`);
+      
+      if (u8.byteLength > 0) return u8;
+      throw new Error('Converted Uint8Array is empty');
+    } catch (fsError) {
+      debugLogger.error('STORAGE', 'READ_URI_FILESYSTEM_ERROR', 'FileSystem read failed', fsError);
+      // Continue to next method
+    }
+  }
+  
+  // Method 2: Try fetch for web URIs and some native URIs
+  try {
+    debugLogger.info('STORAGE', 'READ_URI_FETCH', 'Using fetch for URI');
+    const resp = await fetch(uri);
+    
+    if (!resp.ok) {
+      throw new Error(`Fetch failed with status: ${resp.status}`);
+    }
+    
+    const ab = await resp.arrayBuffer();
+    const u8 = new Uint8Array(ab);
+    debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `Fetch read successful: ${u8.byteLength} bytes`);
+    
+    if (u8.byteLength > 0) return u8;
+    throw new Error('Fetched ArrayBuffer is empty');
+  } catch (fetchError) {
+    debugLogger.error('STORAGE', 'READ_URI_FETCH_ERROR', 'Fetch read failed', fetchError);
+  }
+  
+  // Method 3: Last resort - try to read as data URI
+  if (uri.startsWith('data:')) {
+    try {
+      debugLogger.info('STORAGE', 'READ_URI_DATA', 'Processing data URI');
+      const u8 = base64ToUint8Array(uri);
+      debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `Data URI read successful: ${u8.byteLength} bytes`);
+      
+      if (u8.byteLength > 0) return u8;
+    } catch (dataError) {
+      debugLogger.error('STORAGE', 'READ_URI_DATA_ERROR', 'Data URI read failed', dataError);
+    }
+  }
+
+  const error = new Error(`Unable to read file contents from URI: ${uri}`);
+  debugLogger.error('STORAGE', 'READ_URI_FAILED', 'All read methods failed', error);
+  throw error;
+};
 
 // =====================================================
 // USER OPERATIONS
@@ -1130,6 +1234,44 @@ export const postService = {
       return [];
     }
   },
+
+  // Delete a post
+  async deletePost(postId: string, userId: string): Promise<boolean> {
+    try {
+      debug.dbQuery('posts', 'DELETE', { postId, userId });
+      
+      // First verify the user owns this post
+      const { data: post, error: verifyError } = await supabase
+        .from('posts')
+        .select('user_id')
+        .eq('id', postId)
+        .eq('user_id', userId)
+        .single();
+
+      if (verifyError || !post) {
+        debug.dbError('posts', 'DELETE_VERIFY', { error: 'Post not found or user not authorized' });
+        return false;
+      }
+
+      // Delete the post (CASCADE will handle related records)
+      const { error: deleteError } = await supabase
+        .from('posts')
+        .delete()
+        .eq('id', postId)
+        .eq('user_id', userId);
+
+      if (deleteError) {
+        debug.dbError('posts', 'DELETE', deleteError);
+        return false;
+      }
+
+      debug.dbSuccess('posts', 'DELETE', { postId, userId });
+      return true;
+    } catch (error) {
+      debug.dbError('posts', 'DELETE', { error: (error as Error).message });
+      return false;
+    }
+  },
 };
 
 // =====================================================
@@ -1253,16 +1395,20 @@ export const reelService = {
         },
         videoUrl: reel.video_url,
         caption: reel.caption || '',
-        hashtags: [], // Will be fetched separately
+        hashtags: reel.hashtags || [], // Now includes hashtags from database
         likes: reel.likes_count || 0,
         likesCount: reel.likes_count || 0,
         comments: reel.comments_count || 0,
         commentsCount: reel.comments_count || 0,
         shares: reel.shares_count || 0,
         sharesCount: reel.shares_count || 0,
+        viewCount: reel.view_count || 0,
         isLiked: false, // Will be checked separately
         isSaved: false, // Will be checked separately
+        isTrending: (reel.likes_count || 0) > 1000 || (reel.view_count || 0) > 10000,
         duration: reel.duration || 0,
+        location: reel.location || '',
+        thumbnailUrl: reel.thumbnail_url,
         musicInfo: reel.music_title ? {
           title: reel.music_title,
           artist: reel.music_artist || '',
@@ -1288,7 +1434,8 @@ export const reelService = {
     caption: string, 
     duration: number,
     hashtags?: string[],
-    musicInfo?: { title: string; artist: string; coverUrl: string }
+    musicInfo?: { title: string; artist: string; coverUrl: string },
+    thumbnailUrl?: string
   ): Promise<Reel | null> {
     try {
       const { data: reel, error } = await supabase
@@ -1296,6 +1443,7 @@ export const reelService = {
         .insert({
           user_id: userId,
           video_url: videoUrl,
+          thumbnail_url: thumbnailUrl,
           caption,
           duration,
           music_title: musicInfo?.title,
@@ -1319,6 +1467,7 @@ export const reelService = {
         id: reel.id,
         user,
         videoUrl: reel.video_url,
+        thumbnailUrl: reel.thumbnail_url,
         caption: reel.caption || '',
         hashtags: hashtags || [],
         likes: 0,
@@ -1341,6 +1490,390 @@ export const reelService = {
     } catch (error) {
       console.error('Error creating reel:', error);
       return null;
+    }
+  },
+
+  // Toggle reel like
+  async toggleLike(reelId: string): Promise<boolean> {
+    try {
+      debug.dbQuery('reel_likes', 'TOGGLE', { reelId });
+      const { data, error } = await supabase
+        .rpc('toggle_reel_like', { p_reel_id: reelId });
+
+      if (error) throw error;
+      debug.dbSuccess('reel_likes', 'TOGGLE', { isLiked: data });
+      return data;
+    } catch (error) {
+      debug.dbError('reel_likes', 'TOGGLE', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Toggle reel save
+  async toggleSave(reelId: string): Promise<boolean> {
+    try {
+      debug.dbQuery('reel_saves', 'TOGGLE', { reelId });
+      const { data, error } = await supabase
+        .rpc('toggle_reel_save', { p_reel_id: reelId });
+
+      if (error) throw error;
+      debug.dbSuccess('reel_saves', 'TOGGLE', { isSaved: data });
+      return data;
+    } catch (error) {
+      debug.dbError('reel_saves', 'TOGGLE', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Increment reel view count
+  async incrementView(reelId: string): Promise<void> {
+    try {
+      debug.dbQuery('reels', 'INCREMENT_VIEW', { reelId });
+      const { error } = await supabase
+        .rpc('increment_reel_view', { p_reel_id: reelId });
+
+      if (error) throw error;
+      debug.dbSuccess('reels', 'INCREMENT_VIEW', { reelId });
+    } catch (error) {
+      debug.dbError('reels', 'INCREMENT_VIEW', { error: (error as Error).message });
+    }
+  },
+
+  // Share reel
+  async shareReel(reelId: string, shareType: 'internal' | 'external' | 'story' = 'internal', platform?: string): Promise<boolean> {
+    try {
+      debug.dbQuery('reel_shares', 'CREATE', { reelId, shareType, platform });
+      const { error } = await supabase
+        .from('reel_shares')
+        .insert([{
+          reel_id: reelId,
+          user_id: (await supabase.auth.getUser()).data.user?.id,
+          share_type: shareType,
+          platform,
+        }]);
+
+      if (error) throw error;
+      debug.dbSuccess('reel_shares', 'CREATE', { reelId });
+      return true;
+    } catch (error) {
+      debug.dbError('reel_shares', 'CREATE', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Get user's reels
+  async getUserReels(userId: string, limit: number = 20, offset: number = 0): Promise<Reel[]> {
+    try {
+      debug.dbQuery('user_reels', 'GET', { userId, limit, offset });
+      const { data, error } = await supabase
+        .from('reels')
+        .select(`
+          *,
+          user_profiles!inner(username, avatar, bio, location, age, is_host, hourly_rate, total_chats, response_time),
+          reel_music(title, artist, cover_url, duration)
+        `)
+        .eq('user_id', userId)
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (error) throw error;
+      
+      const transformedReels: Reel[] = (data || []).map((reel: any) => ({
+        id: reel.id,
+        user: {
+          id: reel.user_id,
+          username: reel.user_profiles.username,
+          avatar: reel.user_profiles.avatar,
+          bio: reel.user_profiles.bio,
+          location: reel.user_profiles.location,
+          age: reel.user_profiles.age,
+          isHost: reel.user_profiles.is_host,
+          hourlyRate: reel.user_profiles.hourly_rate,
+          totalChats: reel.user_profiles.total_chats,
+          responseTime: reel.user_profiles.response_time,
+          isFollowing: false,
+        },
+        videoUrl: reel.video_url,
+        caption: reel.caption,
+        hashtags: reel.hashtags || [],
+        likes: reel.likes_count,
+        comments: reel.comments_count,
+        shares: reel.shares_count,
+        isLiked: false, // Would need to check separately
+        isSaved: false, // Would need to check separately
+        duration: reel.duration,
+        musicInfo: reel.reel_music?.[0] ? {
+          title: reel.reel_music[0].title,
+          artist: reel.reel_music[0].artist,
+          coverUrl: reel.reel_music[0].cover_url,
+        } : undefined,
+        timestamp: formatTimestamp(reel.created_at),
+      }));
+
+      debug.dbSuccess('user_reels', 'GET', { count: transformedReels.length });
+      return transformedReels;
+    } catch (error) {
+      debug.dbError('user_reels', 'GET', { error: (error as Error).message });
+      return [];
+    }
+  },
+
+  // Get trending reels based on engagement
+  async getTrendingReels(limit = 20, offset = 0): Promise<Reel[]> {
+    try {
+      debug.dbQuery('reels', 'TRENDING_SELECT', { limit, offset });
+      
+      const { data, error } = await supabase
+        .from('reels')
+        .select(`
+          *,
+          user_profiles!reels_user_id_fkey (
+            id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time
+          )
+        `)
+        .order('likes_count', { ascending: false })
+        .order('view_count', { ascending: false })
+        .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()) // Last 7 days
+        .range(offset, offset + limit - 1);
+
+      if (error || !data) {
+        debug.dbError('reels', 'TRENDING_SELECT', error);
+        return [];
+      }
+
+      debug.dbSuccess('reels', 'TRENDING_SELECT', { count: data.length });
+      
+      return data.map(reel => ({
+        id: reel.id,
+        user: {
+          id: reel.user_profiles.id,
+          username: reel.user_profiles.username || reel.user_profiles.handle || '',
+          avatar: reel.user_profiles.avatar || reel.user_profiles.profile_picture || '',
+          bio: reel.user_profiles.bio || '',
+          location: reel.user_profiles.location || '',
+          age: reel.user_profiles.age || 0,
+          isHost: reel.user_profiles.is_host || false,
+          hourlyRate: reel.user_profiles.hourly_rate || 0,
+          totalChats: reel.user_profiles.total_chats || 0,
+          responseTime: reel.user_profiles.response_time || '5 min',
+          isFollowing: false,
+        },
+        videoUrl: reel.video_url,
+        caption: reel.caption || '',
+        hashtags: reel.hashtags || [],
+        likes: reel.likes_count || 0,
+        likesCount: reel.likes_count || 0,
+        comments: reel.comments_count || 0,
+        commentsCount: reel.comments_count || 0,
+        shares: reel.shares_count || 0,
+        sharesCount: reel.shares_count || 0,
+        viewCount: reel.view_count || 0,
+        isLiked: false,
+        isSaved: false,
+        isTrending: true, // These are trending by definition
+        duration: reel.duration || 0,
+        location: reel.location || '',
+        thumbnailUrl: reel.thumbnail_url,
+        musicInfo: reel.music_title ? {
+          title: reel.music_title,
+          artist: reel.music_artist || '',
+          coverUrl: reel.music_cover_url || '',
+        } : undefined,
+        musicTitle: reel.music_title,
+        musicArtist: reel.music_artist,
+        musicCoverUrl: reel.music_cover_url,
+        timestamp: reel.created_at,
+        createdAt: reel.created_at,
+        updatedAt: reel.updated_at,
+      }));
+    } catch (error) {
+      debug.dbError('reels', 'TRENDING_SELECT', { error: (error as Error).message });
+      return [];
+    }
+  },
+
+  // Get reels by hashtags
+  async getReelsByHashtags(hashtags: string[], limit = 20, offset = 0): Promise<Reel[]> {
+    try {
+      debug.dbQuery('reels', 'HASHTAG_SELECT', { hashtags, limit, offset });
+      
+      const { data, error } = await supabase
+        .from('reels')
+        .select(`
+          *,
+          user_profiles!reels_user_id_fkey (
+            id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time
+          )
+        `)
+        .overlaps('hashtags', hashtags)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (error || !data) {
+        debug.dbError('reels', 'HASHTAG_SELECT', error);
+        return [];
+      }
+
+      debug.dbSuccess('reels', 'HASHTAG_SELECT', { count: data.length, hashtags });
+      
+      return data.map(reel => ({
+        id: reel.id,
+        user: {
+          id: reel.user_profiles.id,
+          username: reel.user_profiles.username || reel.user_profiles.handle || '',
+          avatar: reel.user_profiles.avatar || reel.user_profiles.profile_picture || '',
+          bio: reel.user_profiles.bio || '',
+          location: reel.user_profiles.location || '',
+          age: reel.user_profiles.age || 0,
+          isHost: reel.user_profiles.is_host || false,
+          hourlyRate: reel.user_profiles.hourly_rate || 0,
+          totalChats: reel.user_profiles.total_chats || 0,
+          responseTime: reel.user_profiles.response_time || '5 min',
+          isFollowing: false,
+        },
+        videoUrl: reel.video_url,
+        caption: reel.caption || '',
+        hashtags: reel.hashtags || [],
+        likes: reel.likes_count || 0,
+        likesCount: reel.likes_count || 0,
+        comments: reel.comments_count || 0,
+        commentsCount: reel.comments_count || 0,
+        shares: reel.shares_count || 0,
+        sharesCount: reel.shares_count || 0,
+        viewCount: reel.view_count || 0,
+        isLiked: false,
+        isSaved: false,
+        isTrending: (reel.likes_count || 0) > 1000 || (reel.view_count || 0) > 10000,
+        duration: reel.duration || 0,
+        location: reel.location || '',
+        thumbnailUrl: reel.thumbnail_url,
+        musicInfo: reel.music_title ? {
+          title: reel.music_title,
+          artist: reel.music_artist || '',
+          coverUrl: reel.music_cover_url || '',
+        } : undefined,
+        musicTitle: reel.music_title,
+        musicArtist: reel.music_artist,
+        musicCoverUrl: reel.music_cover_url,
+        timestamp: reel.created_at,
+        createdAt: reel.created_at,
+        updatedAt: reel.updated_at,
+      }));
+    } catch (error) {
+      debug.dbError('reels', 'HASHTAG_SELECT', { error: (error as Error).message });
+      return [];
+    }
+  },
+
+  // Delete a reel
+  async deleteReel(reelId: string, userId: string): Promise<boolean> {
+    try {
+      debug.dbQuery('reels', 'DELETE', { reelId, userId });
+      
+      // First verify the user owns this reel
+      const { data: reel, error: verifyError } = await supabase
+        .from('reels')
+        .select('user_id')
+        .eq('id', reelId)
+        .eq('user_id', userId)
+        .single();
+
+      if (verifyError || !reel) {
+        debug.dbError('reels', 'DELETE_VERIFY', { error: 'Reel not found or user not authorized' });
+        return false;
+      }
+
+      // Delete the reel (CASCADE will handle related records)
+      const { error: deleteError } = await supabase
+        .from('reels')
+        .delete()
+        .eq('id', reelId)
+        .eq('user_id', userId);
+
+      if (deleteError) {
+        debug.dbError('reels', 'DELETE', deleteError);
+        return false;
+      }
+
+      debug.dbSuccess('reels', 'DELETE', { reelId, userId });
+      return true;
+    } catch (error) {
+      debug.dbError('reels', 'DELETE', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Get reels by user
+  async getReelsByUser(userId: string, limit = 20, offset = 0): Promise<Reel[]> {
+    try {
+      debug.dbQuery('reels', 'USER_SELECT', { userId, limit, offset });
+      
+      const { data, error } = await supabase
+        .from('reels')
+        .select(`
+          *,
+          user_profiles!reels_user_id_fkey (
+            id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time
+          )
+        `)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (error || !data) {
+        debug.dbError('reels', 'USER_SELECT', error);
+        return [];
+      }
+
+      debug.dbSuccess('reels', 'USER_SELECT', { count: data.length, userId });
+      
+      return data.map(reel => ({
+        id: reel.id,
+        user: {
+          id: reel.user_profiles.id,
+          username: reel.user_profiles.username || reel.user_profiles.handle || '',
+          avatar: reel.user_profiles.avatar || reel.user_profiles.profile_picture || '',
+          bio: reel.user_profiles.bio || '',
+          location: reel.user_profiles.location || '',
+          age: reel.user_profiles.age || 0,
+          isHost: reel.user_profiles.is_host || false,
+          hourlyRate: reel.user_profiles.hourly_rate || 0,
+          totalChats: reel.user_profiles.total_chats || 0,
+          responseTime: reel.user_profiles.response_time || '5 min',
+          isFollowing: false,
+        },
+        videoUrl: reel.video_url,
+        caption: reel.caption || '',
+        hashtags: reel.hashtags || [],
+        likes: reel.likes_count || 0,
+        likesCount: reel.likes_count || 0,
+        comments: reel.comments_count || 0,
+        commentsCount: reel.comments_count || 0,
+        shares: reel.shares_count || 0,
+        sharesCount: reel.shares_count || 0,
+        viewCount: reel.view_count || 0,
+        isLiked: false,
+        isSaved: false,
+        isTrending: (reel.likes_count || 0) > 1000 || (reel.view_count || 0) > 10000,
+        duration: reel.duration || 0,
+        location: reel.location || '',
+        thumbnailUrl: reel.thumbnail_url,
+        musicInfo: reel.music_title ? {
+          title: reel.music_title,
+          artist: reel.music_artist || '',
+          coverUrl: reel.music_cover_url || '',
+        } : undefined,
+        musicTitle: reel.music_title,
+        musicArtist: reel.music_artist,
+        musicCoverUrl: reel.music_cover_url,
+        timestamp: reel.created_at,
+        createdAt: reel.created_at,
+        updatedAt: reel.updated_at,
+      }));
+    } catch (error) {
+      debug.dbError('reels', 'USER_SELECT', { error: (error as Error).message });
+      return [];
     }
   },
 };
@@ -1624,20 +2157,34 @@ export const storageService = {
       const startTime = Date.now();
       debug.apiCall('storage', 'uploadImage', { bucket, userId, file: file.name });
       
+      // Validate inputs
+      if (!file.uri || !userId) {
+        throw new Error('Missing required parameters: file.uri or userId');
+      }
+      
+      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
+      
       // Generate unique filename
       const timestamp = Date.now();
       const extension = file.name?.split('.').pop() || 'jpg';
       const folder = options.folder || 'uploads';
       const fileName = `${userId}/${folder}/${timestamp}.${extension}`;
+
+      // Convert file URI to binary data
+      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_READ', `Reading file from: ${file.uri}`);
+      const uint8Array = await readUriToUint8Array(file.uri);
       
-      // Convert URI to blob
-      const response = await fetch(file.uri);
-      const blob = await response.blob();
+      // Validate file size
+      if (uint8Array.byteLength === 0) {
+        throw new Error('File is empty (0 bytes)');
+      }
       
-      // Upload to Supabase storage
+      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
+
+      // Upload to Supabase storage using Uint8Array
       const { data, error } = await supabase.storage
         .from(bucket)
-        .upload(fileName, blob, {
+        .upload(fileName, uint8Array, {
           contentType: file.type || 'image/jpeg',
           upsert: true,
         });
@@ -1645,7 +2192,11 @@ export const storageService = {
       if (error) {
         debug.apiError('storage', 'uploadImage', error);
         debugLogger.error('STORAGE', 'UPLOAD_IMAGE', 'Image upload failed', error);
-        return null;
+        throw error;
+      }
+
+      if (!data) {
+        throw new Error('No data returned from upload');
       }
 
       // Get public URL
@@ -1654,7 +2205,7 @@ export const storageService = {
         .getPublicUrl(fileName);
 
       debug.apiSuccess('storage', 'uploadImage', { url: publicUrl, path: fileName }, Date.now() - startTime);
-      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Image uploaded successfully: ${publicUrl}`);
+      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Image uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
       
       return { url: publicUrl, path: fileName };
     } catch (error) {
@@ -1677,20 +2228,34 @@ export const storageService = {
       const startTime = Date.now();
       debug.apiCall('storage', 'uploadVideo', { bucket, userId, file: file.name });
       
+      // Validate inputs
+      if (!file.uri || !userId) {
+        throw new Error('Missing required parameters: file.uri or userId');
+      }
+      
+      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
+      
       // Generate unique filename
       const timestamp = Date.now();
       const extension = file.name?.split('.').pop() || 'mp4';
       const folder = options.folder || 'videos';
       const fileName = `${userId}/${folder}/${timestamp}.${extension}`;
+
+      // Convert file URI to binary data
+      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_READ', `Reading file from: ${file.uri}`);
+      const uint8Array = await readUriToUint8Array(file.uri);
       
-      // Convert URI to blob
-      const response = await fetch(file.uri);
-      const blob = await response.blob();
+      // Validate file size
+      if (uint8Array.byteLength === 0) {
+        throw new Error('Video file is empty (0 bytes)');
+      }
       
-      // Upload to Supabase storage
+      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
+
+      // Upload using Uint8Array to avoid 0-byte issues on native
       const { data, error } = await supabase.storage
         .from(bucket)
-        .upload(fileName, blob, {
+        .upload(fileName, uint8Array, {
           contentType: file.type || 'video/mp4',
           upsert: true,
         });
@@ -1698,7 +2263,11 @@ export const storageService = {
       if (error) {
         debug.apiError('storage', 'uploadVideo', error);
         debugLogger.error('STORAGE', 'UPLOAD_VIDEO', 'Video upload failed', error);
-        return null;
+        throw error;
+      }
+
+      if (!data) {
+        throw new Error('No data returned from video upload');
       }
 
       // Get public URL
@@ -1707,7 +2276,7 @@ export const storageService = {
         .getPublicUrl(fileName);
 
       debug.apiSuccess('storage', 'uploadVideo', { url: publicUrl, path: fileName }, Date.now() - startTime);
-      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Video uploaded successfully: ${publicUrl}`);
+      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Video uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
       
       return { url: publicUrl, path: fileName };
     } catch (error) {

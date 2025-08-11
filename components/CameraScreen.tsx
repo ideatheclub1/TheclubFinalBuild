@@ -28,6 +28,7 @@ import Animated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
+import { VideoThumbnailGenerator } from '../utils/videoThumbnailGenerator';
 import { X, RotateCcw, Zap, ZapOff, Image, Video, Circle, Camera, CircleAlert as AlertCircle, Timer, Palette } from 'lucide-react-native';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -106,6 +107,11 @@ export default function CameraScreen({
   const [showFilterName, setShowFilterName] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [timerDelay, setTimerDelay] = useState(0);
+  const [isCameraReady, setIsCameraReady] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [recordedVideoUri, setRecordedVideoUri] = useState<string | null>(null);
+  const [showThumbnailCapture, setShowThumbnailCapture] = useState(false);
+  const [capturedThumbnail, setCapturedThumbnail] = useState<string | null>(null);
   
   const cameraRef = useRef<CameraView>(null);
   const recordingTimer = useRef<number | null>(null);
@@ -174,6 +180,79 @@ export default function CameraScreen({
       true
     );
   }, []);
+
+  // Handle camera initialization with more robust timing
+  useEffect(() => {
+    if (isVisible && permission?.granted) {
+      setIsInitializing(true);
+      setIsCameraReady(false);
+      
+      // More aggressive timing for camera readiness
+      const initTimer = setTimeout(() => {
+        console.log('Camera initialization timeout - assuming ready');
+        setIsCameraReady(true);
+        setIsInitializing(false);
+      }, 3000); // Increased to 3 seconds
+      
+      return () => clearTimeout(initTimer);
+    } else {
+      setIsCameraReady(false);
+      setIsInitializing(true);
+    }
+  }, [isVisible, permission?.granted]);
+
+  // Handle camera ready state - might not fire reliably in newer versions
+  const handleCameraReady = () => {
+    console.log('Camera onReady callback fired!');
+    setIsCameraReady(true);
+    setIsInitializing(false);
+  };
+
+  // Additional effect to handle camera mount with aggressive readiness detection
+  useEffect(() => {
+    if (isVisible && permission?.granted) {
+      let mounted = true;
+      
+      const checkReadiness = async () => {
+        try {
+          // Wait for initial mount
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          if (!mounted || !isVisible) return;
+          
+          // Multiple attempts to detect readiness
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            console.log(`Camera readiness attempt ${attempt}/3`);
+            
+            await new Promise(resolve => setTimeout(resolve, 800));
+            
+            if (!mounted || !isVisible) return;
+            
+            // If we get this far, assume camera is ready
+            if (attempt >= 2) {
+              console.log('Camera assumed ready after multiple attempts');
+              setIsCameraReady(true);
+              setIsInitializing(false);
+              return;
+            }
+          }
+        } catch (error) {
+          console.log('Camera readiness check failed:', error);
+          // Even if check fails, assume ready after timeout
+          if (mounted && isVisible) {
+            setIsCameraReady(true);
+            setIsInitializing(false);
+          }
+        }
+      };
+      
+      checkReadiness();
+      
+      return () => {
+        mounted = false;
+      };
+    }
+  }, [isVisible, permission?.granted]);
 
   const triggerHaptic = (intensity: 'light' | 'medium' | 'heavy' = 'medium') => {
     try {
@@ -256,38 +335,49 @@ export default function CameraScreen({
     if (currentMode === 'Post') {
       // Take photo
       try {
-        if (cameraRef.current) {
-          const photo = await cameraRef.current.takePictureAsync({
-            quality: 0.8,
-            base64: false,
+        if (!isCameraReady || isInitializing) {
+          Alert.alert('Please wait', 'Camera is still initializing...');
+          return;
+        }
+        
+        if (!cameraRef.current) {
+          Alert.alert('Error', 'Camera is not available');
+          return;
+        }
+
+        // Additional safety check - wait a bit before taking photo
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        const photo = await cameraRef.current.takePictureAsync({
+          quality: 0.8,
+          base64: false,
+        });
+        
+        // Handle the captured photo
+        if (onMediaCaptured) {
+          onMediaCaptured({
+            uri: photo.uri,
+            type: 'image/jpeg',
+            name: `photo-${Date.now()}.jpg`
           });
-          
-          // Handle the captured photo
-          if (onMediaCaptured) {
-            onMediaCaptured({
-              uri: photo.uri,
-              type: 'image/jpeg',
-              name: `photo-${Date.now()}.jpg`
-            });
-          } else if (onPostCreate) {
-            onPostCreate(photo.uri, 'image');
-          } else {
-            Alert.alert(
-              'Photo Captured!', 
-              'Would you like to create a post with this photo?',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                { 
-                  text: 'Create Post', 
-                  onPress: () => {
-                    // Navigate to post creation with this image
-                    console.log('Navigate to post creation with:', photo.uri);
-                    onClose();
-                  }
+        } else if (onPostCreate) {
+          onPostCreate(photo.uri, 'image');
+        } else {
+          Alert.alert(
+            'Photo Captured!', 
+            'Would you like to create a post with this photo?',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { 
+                text: 'Create Post', 
+                onPress: () => {
+                  // Navigate to post creation with this image
+                  console.log('Navigate to post creation with:', photo.uri);
+                  onClose();
                 }
-              ]
-            );
-          }
+              }
+            ]
+          );
         }
       } catch (error) {
         Alert.alert('Error', 'Failed to capture photo');
@@ -303,25 +393,113 @@ export default function CameraScreen({
   };
 
   const handleStartRecording = async () => {
-    try {
-      if (cameraRef.current) {
-        setIsRecording(true);
-        triggerHaptic('medium');
+    let retryCount = 0;
+    const maxRetries = 2;
+    
+    const attemptRecording = async (): Promise<any> => {
+      try {
+        if (!cameraRef.current) {
+          throw new Error('Camera ref not available');
+        }
+
+        // Additional safety check - wait before recording
+        await new Promise(resolve => setTimeout(resolve, 500));
         
         const video = await cameraRef.current.recordAsync({
           maxDuration: currentMode === 'Shorts' ? 15 : 60,
         });
         
-        // Handle the recorded video
-        if (video && video.uri) {
-          if (onMediaCaptured) {
-            onMediaCaptured({
-              uri: video.uri,
-              type: 'video/mp4',
-              name: `video-${Date.now()}.mp4`
-            });
-          } else if (onPostCreate) {
-            onPostCreate(video.uri, 'video');
+        return video;
+      } catch (error: any) {
+        if (error.message.includes('Camera is not ready') && retryCount < maxRetries) {
+          retryCount++;
+          console.log(`Recording attempt ${retryCount}/${maxRetries + 1} failed, retrying...`);
+          
+          // Force assume camera is ready and wait longer
+          setIsCameraReady(true);
+          setIsInitializing(false);
+          
+          // Wait longer before retry
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          return attemptRecording();
+        }
+        throw error;
+      }
+    };
+
+    try {
+      if (!isCameraReady || isInitializing) {
+        // Force readiness if user is trying to record
+        console.log('Forcing camera ready state for recording');
+        setIsCameraReady(true);
+        setIsInitializing(false);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      
+      if (!cameraRef.current) {
+        Alert.alert('Error', 'Camera is not available');
+        return;
+      }
+
+      setIsRecording(true);
+      triggerHaptic('medium');
+      
+      const video = await attemptRecording();
+      
+      // Handle the recorded video
+      if (video && video.uri) {
+        // Store the video URI for thumbnail capture
+        setRecordedVideoUri(video.uri);
+        
+        if (onMediaCaptured) {
+          onMediaCaptured({
+            uri: video.uri,
+            type: 'video/mp4',
+            name: `video-${Date.now()}.mp4`
+          });
+        } else if (onPostCreate) {
+          onPostCreate(video.uri, 'video');
+        } else {
+          // For reels, show thumbnail capture option
+          if (currentMode === 'Reel' || currentMode === 'Shorts') {
+            Alert.alert(
+              'Video Recorded!', 
+              'Would you like to capture a custom thumbnail for your reel?',
+              [
+                { 
+                  text: 'Skip Thumbnail', 
+                  style: 'cancel',
+                  onPress: async () => {
+                    try {
+                      // Auto-generate thumbnail when skipping
+                      console.log('Auto-generating thumbnail for video:', video.uri);
+                      const autoThumbnail = await VideoThumbnailGenerator.generateThumbnailWithFallback(video.uri);
+                      
+                      if (autoThumbnail) {
+                        console.log('Navigate to reel creation with auto-generated thumbnail:', {
+                          videoUri: video.uri,
+                          thumbnailUri: autoThumbnail.uri,
+                          autoGenerated: true,
+                          timestamp: autoThumbnail.timestamp
+                        });
+                      } else {
+                        console.log('Navigate to reel creation with video only:', video.uri);
+                      }
+                    } catch (error) {
+                      console.error('Failed to auto-generate thumbnail:', error);
+                      console.log('Navigate to reel creation with video only:', video.uri);
+                    }
+                    onClose();
+                  }
+                },
+                { 
+                  text: 'Capture Thumbnail', 
+                  onPress: () => {
+                    setShowThumbnailCapture(true);
+                  }
+                }
+              ]
+            );
           } else {
             Alert.alert(
               'Video Recorded!', 
@@ -331,7 +509,6 @@ export default function CameraScreen({
                 { 
                   text: 'Create Reel', 
                   onPress: () => {
-                    // Navigate to reel creation with this video
                     console.log('Navigate to reel creation with:', video.uri);
                     onClose();
                   }
@@ -353,6 +530,86 @@ export default function CameraScreen({
       setIsRecording(false);
       triggerHaptic('heavy');
     }
+  };
+
+  const handleCaptureThumbnail = async () => {
+    try {
+      if (!isCameraReady || isInitializing) {
+        Alert.alert('Please wait', 'Camera is still initializing...');
+        return;
+      }
+      
+      if (!cameraRef.current) {
+        Alert.alert('Error', 'Camera is not available');
+        return;
+      }
+
+      // Additional safety check - wait a bit before taking photo
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.8,
+        base64: false,
+      });
+      
+      setCapturedThumbnail(photo.uri);
+      setShowThumbnailCapture(false);
+      
+      // Show confirmation with thumbnail preview
+      Alert.alert(
+        'Thumbnail Captured!', 
+        'Ready to create your reel with custom thumbnail?',
+        [
+          { 
+            text: 'Retake Thumbnail', 
+            onPress: () => setShowThumbnailCapture(true) 
+          },
+          { 
+            text: 'Create Reel', 
+            onPress: () => {
+              console.log('Navigate to reel creation with:', {
+                videoUri: recordedVideoUri,
+                thumbnailUri: photo.uri
+              });
+              onClose();
+            }
+          }
+        ]
+      );
+      
+    } catch (error) {
+      Alert.alert('Error', 'Failed to capture thumbnail');
+      console.error('Thumbnail capture error:', error);
+    }
+  };
+
+  const handleSkipThumbnail = async () => {
+    setShowThumbnailCapture(false);
+    
+    if (recordedVideoUri) {
+      try {
+        // Auto-generate thumbnail using the algorithm
+        console.log('Auto-generating thumbnail for video:', recordedVideoUri);
+        const autoThumbnail = await VideoThumbnailGenerator.generateThumbnailWithFallback(recordedVideoUri);
+        
+        if (autoThumbnail) {
+          console.log('Auto-generated thumbnail:', autoThumbnail.uri);
+          console.log('Navigate to reel creation with:', {
+            videoUri: recordedVideoUri,
+            thumbnailUri: autoThumbnail.uri,
+            autoGenerated: true,
+            timestamp: autoThumbnail.timestamp
+          });
+        } else {
+          console.log('Navigate to reel creation with video only:', recordedVideoUri);
+        }
+      } catch (error) {
+        console.error('Failed to auto-generate thumbnail:', error);
+        console.log('Navigate to reel creation with video only:', recordedVideoUri);
+      }
+    }
+    
+    onClose();
   };
 
   const handleFlipCamera = () => {
@@ -532,6 +789,18 @@ export default function CameraScreen({
             
             {/* Flash overlay */}
             <Animated.View style={[styles.flashOverlay, flashOverlayStyle]} />
+            
+            {/* Camera loading overlay */}
+            {(isInitializing || !isCameraReady) && (
+              <View style={styles.loadingOverlay}>
+                <View style={styles.loadingContainer}>
+                  <View style={styles.loadingSpinner} />
+                  <Text style={styles.loadingText}>
+                    {isInitializing ? 'Initializing Camera...' : 'Camera Loading...'}
+                  </Text>
+                </View>
+              </View>
+            )}
           </CameraView>
         </View>
       </GestureDetector>
@@ -621,8 +890,13 @@ export default function CameraScreen({
 
           {/* Capture Button */}
           <AnimatedTouchableOpacity
-            style={[styles.captureButtonContainer, recordButtonStyle]}
+            style={[
+              styles.captureButtonContainer, 
+              recordButtonStyle,
+              (!isCameraReady || isInitializing) && styles.disabledButton
+            ]}
             onPress={handleCapture}
+            disabled={!isCameraReady || isInitializing}
           >
             <LinearGradient
               colors={isRecording ? ['#EF4444', '#DC2626'] : ['#6C5CE7', '#5A4FCF']}
@@ -660,6 +934,51 @@ export default function CameraScreen({
           </View>
         </Animated.View>
       </LinearGradient>
+
+      {/* Thumbnail Capture Overlay */}
+      {showThumbnailCapture && (
+        <View style={styles.thumbnailCaptureOverlay}>
+          <LinearGradient
+            colors={['rgba(0, 0, 0, 0.8)', 'rgba(30, 30, 30, 0.9)']}
+            style={styles.thumbnailCaptureBackground}
+          >
+            <View style={styles.thumbnailCaptureHeader}>
+              <Text style={styles.thumbnailCaptureTitle}>Capture Thumbnail</Text>
+              <Text style={styles.thumbnailCaptureSubtitle}>
+                Position your shot and tap capture for a custom thumbnail
+              </Text>
+            </View>
+
+            <View style={styles.thumbnailCaptureControls}>
+              <TouchableOpacity 
+                style={styles.thumbnailSkipButton}
+                onPress={handleSkipThumbnail}
+              >
+                <Text style={styles.thumbnailSkipText}>Skip</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.thumbnailCaptureButton}
+                onPress={handleCaptureThumbnail}
+              >
+                <LinearGradient
+                  colors={['#6C5CE7', '#5A4FCF']}
+                  style={styles.thumbnailCaptureButtonGradient}
+                >
+                  <Camera size={24} color="#FFFFFF" />
+                </LinearGradient>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.thumbnailFlipButton}
+                onPress={handleFlipCamera}
+              >
+                <RotateCcw size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+          </LinearGradient>
+        </View>
+      )}
     </View>
   );
 }
@@ -698,6 +1017,34 @@ const styles = StyleSheet.create({
     bottom: 0,
     backgroundColor: '#FFFFFF',
     zIndex: 10,
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(30, 30, 30, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 15,
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    gap: 16,
+  },
+  loadingSpinner: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 3,
+    borderColor: '#6C5CE7',
+    borderTopColor: 'transparent',
+  },
+  loadingText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '500',
   },
   uiOverlay: {
     position: 'absolute',
@@ -894,6 +1241,10 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: 'rgba(108, 92, 231, 0.4)',
   },
+  disabledButton: {
+    opacity: 0.5,
+    shadowOpacity: 0.2,
+  },
   recordIndicator: {
     width: 32,
     height: 32,
@@ -919,5 +1270,88 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0, 0, 0, 0.8)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
+  },
+  thumbnailCaptureOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 20,
+  },
+  thumbnailCaptureBackground: {
+    flex: 1,
+    justifyContent: 'space-between',
+    paddingVertical: 60,
+    paddingHorizontal: 20,
+  },
+  thumbnailCaptureHeader: {
+    alignItems: 'center',
+    paddingTop: 40,
+  },
+  thumbnailCaptureTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginBottom: 8,
+    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+  },
+  thumbnailCaptureSubtitle: {
+    fontSize: 16,
+    color: 'rgba(255, 255, 255, 0.8)',
+    textAlign: 'center',
+    lineHeight: 22,
+    paddingHorizontal: 20,
+  },
+  thumbnailCaptureControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 40,
+  },
+  thumbnailSkipButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 25,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  thumbnailSkipText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  thumbnailCaptureButton: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    shadowColor: '#6C5CE7',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  thumbnailCaptureButtonGradient: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  thumbnailFlipButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

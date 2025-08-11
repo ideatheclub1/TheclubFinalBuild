@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   FlatList,
   ScrollView,
   RefreshControl,
@@ -15,7 +14,9 @@ import {
   ImageBackground,
   Modal,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
+import SafeAreaWrapper from '@/components/SafeAreaWrapper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { useRouter } from 'expo-router';
@@ -34,7 +35,7 @@ import Animated, {
   SlideInRight,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { Heart, MessageCircle, Share2, Play, TrendingUp, Eye, Clock, X, Users } from 'lucide-react-native';
+import { Heart, MessageCircle, Share2, Play, TrendingUp, Eye, Clock, X, Users, MoreVertical, Trash2 } from 'lucide-react-native';
 import { Post, Story, User } from '../types';
 import { useComments } from '../contexts/CommentContext';
 import { useUser } from '../contexts/UserContext';
@@ -153,6 +154,12 @@ const FeedScreenContent = () => {
         dataService.post.getPosts(),
         dataService.story.getStories(),
       ]);
+      
+      // Debug: Log posts with image information
+      postsData.forEach((post, index) => {
+        debugLogger.log('Post loaded', `Post ${index + 1}: ID=${post.id}, HasImage=${!!post.image}, ImageUrl=${post.image || 'null'}`);
+      });
+      
       debug.dbSuccess('posts', 'LOAD', { count: postsData.length });
       debug.dbSuccess('stories', 'LOAD', { count: storiesData.length });
       setPosts(postsData);
@@ -283,6 +290,70 @@ const FeedScreenContent = () => {
     // Share functionality would be implemented here
   }, []);
 
+  const handleDeletePost = useCallback((postId: string, postUsername: string) => {
+    debug.userAction('Delete post pressed', { postId });
+    
+    if (!currentUser) {
+      debug.userAction('No current user, skipping delete action');
+      return;
+    }
+
+    Alert.alert(
+      '🗑️ Delete Post',
+      `Are you sure you want to delete this post?\n\nThis action cannot be undone and will permanently remove the post and all associated comments and likes.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => debug.userAction('Delete post cancelled', { postId })
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              debug.userAction('Confirming delete post', { postId, userId: currentUser.id });
+              
+              const success = await dataService.post.deletePost(postId, currentUser.id);
+              if (success) {
+                debug.userAction('Post deleted successfully', { postId });
+                // Remove post from local state
+                setPosts(prevPosts => prevPosts.filter(post => post.id !== postId));
+                
+                Alert.alert(
+                  '✅ Success', 
+                  'Post has been deleted successfully!',
+                  [{ text: 'OK', style: 'default' }]
+                );
+                
+                try {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                } catch (error) {
+                  debugLogger.error('Haptics error during delete confirmation', (error as Error).message);
+                }
+              } else {
+                debug.userAction('Failed to delete post', { postId });
+                Alert.alert(
+                  '❌ Error', 
+                  'Failed to delete post. Please check your connection and try again.',
+                  [{ text: 'OK', style: 'default' }]
+                );
+              }
+            } catch (error) {
+              debugLogger.error('Error deleting post', (error as Error).message);
+              Alert.alert(
+                '❌ Error', 
+                'An unexpected error occurred while deleting the post. Please try again.',
+                [{ text: 'OK', style: 'default' }]
+              );
+            }
+          }
+        }
+      ],
+      { cancelable: true }
+    );
+  }, [currentUser]);
+
   const handleStoryPress = useCallback((story: Story) => {
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -405,6 +476,8 @@ const FeedScreenContent = () => {
     const [isLiked, setIsLiked] = useState(post.isLiked);
     const [likes, setLikes] = useState(post.likes);
     const [isLoadingLikes, setIsLoadingLikes] = useState(false);
+    const [imageError, setImageError] = useState(false);
+    const [imageLoading, setImageLoading] = useState(true);
 
     // Load actual likes count
     useEffect(() => {
@@ -497,7 +570,26 @@ const FeedScreenContent = () => {
           <View style={styles.mediaContainer}>
             {post.image && (
               <AnimatedImageBackground
-                source={{ uri: post.image }} 
+                source={{ 
+                  uri: imageError 
+                    ? 'https://images.pexels.com/photos/1181677/pexels-photo-1181677.jpeg?auto=compress&cs=tinysrgb&w=400'
+                    : post.image 
+                }}
+                onError={(error) => {
+                  setImageError(true);
+                  setImageLoading(false);
+                  debugLogger.error('Image load error', `Failed to load image for post ${post.id}: ${post.image}. Using fallback image.`);
+                  console.error('Image load error:', error);
+                }}
+                onLoad={() => {
+                  setImageLoading(false);
+                  if (!imageError) {
+                    debugLogger.log('Image loaded', `Successfully loaded image for post ${post.id}: ${post.image}`);
+                  }
+                }}
+                onLoadStart={() => {
+                  setImageLoading(true);
+                }}
                 style={styles.postImage}
                 imageStyle={styles.postImageStyle}
               >
@@ -505,6 +597,22 @@ const FeedScreenContent = () => {
                   colors={['transparent', 'rgba(30, 30, 30, 0.7)']}
                   style={styles.imageGradient}
                 />
+
+                {/* Loading Indicator */}
+                {imageLoading && (
+                  <View style={styles.imageLoadingOverlay}>
+                    <ActivityIndicator size="large" color="#6C5CE7" />
+                    <Text style={styles.imageLoadingText}>Loading image...</Text>
+                  </View>
+                )}
+
+                {/* Error Message */}
+                {imageError && (
+                  <View style={styles.imageErrorOverlay}>
+                    <Text style={styles.errorText}>📷 Image unavailable</Text>
+                    <Text style={styles.errorSubtext}>Using placeholder</Text>
+                  </View>
+                )}
                 
                 {/* Trending Badge */}
                 {post.isTrending && (
@@ -529,6 +637,16 @@ const FeedScreenContent = () => {
                       <Text style={styles.timestamp}>{post.timestamp}</Text>
                     </View>
                   </TouchableOpacity>
+
+                  {/* Delete Button - Only show for post owner */}
+                  {currentUser && post.user.id === currentUser.id && (
+                    <TouchableOpacity
+                      onPress={() => handleDeletePost(post.id, post.user.username)}
+                      style={styles.deleteButton}
+                    >
+                      <Trash2 size={18} color="#FF6B6B" strokeWidth={2} />
+                    </TouchableOpacity>
+                  )}
                 </View>
               </AnimatedImageBackground>
             )}
@@ -751,7 +869,7 @@ const FeedScreenContent = () => {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaWrapper style={styles.container} backgroundColor="#1E1E1E">
       <StatusBar 
         barStyle="light-content" 
         backgroundColor="#1E1E1E" 
@@ -873,7 +991,7 @@ const FeedScreenContent = () => {
           </Animated.View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </SafeAreaWrapper>
   );
 };
 
@@ -1041,10 +1159,26 @@ const styles = StyleSheet.create({
     bottom: 16,
     left: 16,
     right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   userInfo: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
+  },
+  deleteButton: {
+    padding: 8,
+    backgroundColor: 'rgba(255, 107, 107, 0.15)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 107, 0.3)',
+    shadowColor: '#FF6B6B',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 4,
   },
   userAvatar: {
     width: 44,
@@ -1405,6 +1539,49 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#999999',
     textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+  },
+  
+  // Image loading and error styles
+  imageLoadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 16,
+  },
+  imageErrorOverlay: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    backgroundColor: 'rgba(255, 59, 48, 0.9)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  imageLoadingText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    marginTop: 8,
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+  },
+  errorText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif-medium',
+  },
+  errorSubtext: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    textAlign: 'center',
+    marginTop: 2,
     fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
   },
 });

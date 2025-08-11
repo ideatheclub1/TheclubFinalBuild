@@ -6,12 +6,12 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  SafeAreaView,
   Alert,
   Platform,
   Dimensions,
   Animated as RNAnimated,
 } from 'react-native';
+import SafeAreaWrapper from '@/components/SafeAreaWrapper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { useRouter } from 'expo-router';
@@ -354,7 +354,7 @@ export default function MessagesScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaWrapper style={styles.container} backgroundColor="#1E1E1E">
       <LinearGradient
         colors={['#1E1E1E', '#301E5A', '#1E1E1E']}
         style={styles.background}
@@ -431,7 +431,7 @@ export default function MessagesScreen() {
           </LinearGradient>
         </AnimatedTouchableOpacity>
       </LinearGradient>
-    </SafeAreaView>
+    </SafeAreaWrapper>
   );
 }
 
