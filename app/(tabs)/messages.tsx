@@ -1,3 +1,3 @@
-import MessagesScreenSimple from '../../screens/MessagesScreenSimple';
+import MessagesScreen from '../../screens/MessagesScreen';
 
-export default MessagesScreenSimple;
+export default MessagesScreen;

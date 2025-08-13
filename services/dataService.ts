@@ -5,136 +5,6 @@ import {
 } from '@/types';
 import { calculateDistance } from '@/utils/distanceCalculator';
 import { debug, debugLogger } from '@/utils/debugLogger';
-import * as FileSystem from 'expo-file-system';
-
-// =====================================================
-// FILE HELPERS
-// =====================================================
-
-const base64ToUint8Array = (base64: string): Uint8Array => {
-  const cleaned = base64.replace(/^data:.*;base64,/, '');
-  
-  // Use native atob if available (web), otherwise use manual conversion
-  let binaryString: string;
-  if (typeof atob !== 'undefined') {
-    binaryString = atob(cleaned);
-  } else {
-    // Manual base64 decode for React Native
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    let result = '';
-    let i = 0;
-    
-    while (i < cleaned.length) {
-      const encoded1 = chars.indexOf(cleaned[i++]);
-      const encoded2 = chars.indexOf(cleaned[i++]);
-      const encoded3 = chars.indexOf(cleaned[i++]);
-      const encoded4 = chars.indexOf(cleaned[i++]);
-      
-      const bitmap = (encoded1 << 18) | (encoded2 << 12) | (encoded3 << 6) | encoded4;
-      
-      result += String.fromCharCode((bitmap >> 16) & 255);
-      if (encoded3 !== 64) result += String.fromCharCode((bitmap >> 8) & 255);
-      if (encoded4 !== 64) result += String.fromCharCode(bitmap & 255);
-    }
-    binaryString = result;
-  }
-  
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i += 1) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-};
-
-const readUriToUint8Array = async (uri: string): Promise<Uint8Array> => {
-<<<<<<< HEAD
-  debugLogger.log('STORAGE', 'READ_URI_START', `Reading file from URI: ${uri}`);
-=======
-  debugLogger.info('STORAGE', 'READ_URI_START', `Reading file from URI: ${uri}`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-  
-  // Method 1: Try FileSystem first for React Native file URIs
-  if (uri.startsWith('file://') || uri.startsWith('content://') || uri.startsWith('ph://')) {
-    try {
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'READ_URI_FILESYSTEM', 'Using FileSystem for native URI');
-=======
-      debugLogger.info('STORAGE', 'READ_URI_FILESYSTEM', 'Using FileSystem for native URI');
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-      const base64 = await FileSystem.readAsStringAsync(uri, { 
-        encoding: FileSystem.EncodingType.Base64 
-      });
-      
-      if (!base64 || base64.length === 0) {
-        throw new Error('Empty base64 string from FileSystem');
-      }
-      
-      const u8 = base64ToUint8Array(base64);
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'READ_URI_SUCCESS', `FileSystem read successful: ${u8.byteLength} bytes`);
-=======
-      debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `FileSystem read successful: ${u8.byteLength} bytes`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-      
-      if (u8.byteLength > 0) return u8;
-      throw new Error('Converted Uint8Array is empty');
-    } catch (fsError) {
-      debugLogger.error('STORAGE', 'READ_URI_FILESYSTEM_ERROR', 'FileSystem read failed', fsError);
-      // Continue to next method
-    }
-  }
-  
-  // Method 2: Try fetch for web URIs and some native URIs
-  try {
-<<<<<<< HEAD
-    debugLogger.log('STORAGE', 'READ_URI_FETCH', 'Using fetch for URI');
-=======
-    debugLogger.info('STORAGE', 'READ_URI_FETCH', 'Using fetch for URI');
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-    const resp = await fetch(uri);
-    
-    if (!resp.ok) {
-      throw new Error(`Fetch failed with status: ${resp.status}`);
-    }
-    
-    const ab = await resp.arrayBuffer();
-    const u8 = new Uint8Array(ab);
-<<<<<<< HEAD
-    debugLogger.log('STORAGE', 'READ_URI_SUCCESS', `Fetch read successful: ${u8.byteLength} bytes`);
-=======
-    debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `Fetch read successful: ${u8.byteLength} bytes`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-    
-    if (u8.byteLength > 0) return u8;
-    throw new Error('Fetched ArrayBuffer is empty');
-  } catch (fetchError) {
-    debugLogger.error('STORAGE', 'READ_URI_FETCH_ERROR', 'Fetch read failed', fetchError);
-  }
-  
-  // Method 3: Last resort - try to read as data URI
-  if (uri.startsWith('data:')) {
-    try {
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'READ_URI_DATA', 'Processing data URI');
-      const u8 = base64ToUint8Array(uri);
-      debugLogger.log('STORAGE', 'READ_URI_SUCCESS', `Data URI read successful: ${u8.byteLength} bytes`);
-=======
-      debugLogger.info('STORAGE', 'READ_URI_DATA', 'Processing data URI');
-      const u8 = base64ToUint8Array(uri);
-      debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `Data URI read successful: ${u8.byteLength} bytes`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-      
-      if (u8.byteLength > 0) return u8;
-    } catch (dataError) {
-      debugLogger.error('STORAGE', 'READ_URI_DATA_ERROR', 'Data URI read failed', dataError);
-    }
-  }
-
-  const error = new Error(`Unable to read file contents from URI: ${uri}`);
-  debugLogger.error('STORAGE', 'READ_URI_FAILED', 'All read methods failed', error);
-  throw error;
-};
 
 // =====================================================
 // USER OPERATIONS
@@ -1260,44 +1130,6 @@ export const postService = {
       return [];
     }
   },
-
-  // Delete a post
-  async deletePost(postId: string, userId: string): Promise<boolean> {
-    try {
-      debug.dbQuery('posts', 'DELETE', { postId, userId });
-      
-      // First verify the user owns this post
-      const { data: post, error: verifyError } = await supabase
-        .from('posts')
-        .select('user_id')
-        .eq('id', postId)
-        .eq('user_id', userId)
-        .single();
-
-      if (verifyError || !post) {
-        debug.dbError('posts', 'DELETE_VERIFY', { error: 'Post not found or user not authorized' });
-        return false;
-      }
-
-      // Delete the post (CASCADE will handle related records)
-      const { error: deleteError } = await supabase
-        .from('posts')
-        .delete()
-        .eq('id', postId)
-        .eq('user_id', userId);
-
-      if (deleteError) {
-        debug.dbError('posts', 'DELETE', deleteError);
-        return false;
-      }
-
-      debug.dbSuccess('posts', 'DELETE', { postId, userId });
-      return true;
-    } catch (error) {
-      debug.dbError('posts', 'DELETE', { error: (error as Error).message });
-      return false;
-    }
-  },
 };
 
 // =====================================================
@@ -1421,20 +1253,16 @@ export const reelService = {
         },
         videoUrl: reel.video_url,
         caption: reel.caption || '',
-        hashtags: reel.hashtags || [], // Now includes hashtags from database
+        hashtags: [], // Will be fetched separately
         likes: reel.likes_count || 0,
         likesCount: reel.likes_count || 0,
         comments: reel.comments_count || 0,
         commentsCount: reel.comments_count || 0,
         shares: reel.shares_count || 0,
         sharesCount: reel.shares_count || 0,
-        viewCount: reel.view_count || 0,
         isLiked: false, // Will be checked separately
         isSaved: false, // Will be checked separately
-        isTrending: (reel.likes_count || 0) > 1000 || (reel.view_count || 0) > 10000,
         duration: reel.duration || 0,
-        location: reel.location || '',
-        thumbnailUrl: reel.thumbnail_url,
         musicInfo: reel.music_title ? {
           title: reel.music_title,
           artist: reel.music_artist || '',
@@ -1460,8 +1288,7 @@ export const reelService = {
     caption: string, 
     duration: number,
     hashtags?: string[],
-    musicInfo?: { title: string; artist: string; coverUrl: string },
-    thumbnailUrl?: string
+    musicInfo?: { title: string; artist: string; coverUrl: string }
   ): Promise<Reel | null> {
     try {
       const { data: reel, error } = await supabase
@@ -1469,7 +1296,6 @@ export const reelService = {
         .insert({
           user_id: userId,
           video_url: videoUrl,
-          thumbnail_url: thumbnailUrl,
           caption,
           duration,
           music_title: musicInfo?.title,
@@ -1493,7 +1319,6 @@ export const reelService = {
         id: reel.id,
         user,
         videoUrl: reel.video_url,
-        thumbnailUrl: reel.thumbnail_url,
         caption: reel.caption || '',
         hashtags: hashtags || [],
         likes: 0,
@@ -1516,390 +1341,6 @@ export const reelService = {
     } catch (error) {
       console.error('Error creating reel:', error);
       return null;
-    }
-  },
-
-  // Toggle reel like
-  async toggleLike(reelId: string): Promise<boolean> {
-    try {
-      debug.dbQuery('reel_likes', 'TOGGLE', { reelId });
-      const { data, error } = await supabase
-        .rpc('toggle_reel_like', { p_reel_id: reelId });
-
-      if (error) throw error;
-      debug.dbSuccess('reel_likes', 'TOGGLE', { isLiked: data });
-      return data;
-    } catch (error) {
-      debug.dbError('reel_likes', 'TOGGLE', { error: (error as Error).message });
-      return false;
-    }
-  },
-
-  // Toggle reel save
-  async toggleSave(reelId: string): Promise<boolean> {
-    try {
-      debug.dbQuery('reel_saves', 'TOGGLE', { reelId });
-      const { data, error } = await supabase
-        .rpc('toggle_reel_save', { p_reel_id: reelId });
-
-      if (error) throw error;
-      debug.dbSuccess('reel_saves', 'TOGGLE', { isSaved: data });
-      return data;
-    } catch (error) {
-      debug.dbError('reel_saves', 'TOGGLE', { error: (error as Error).message });
-      return false;
-    }
-  },
-
-  // Increment reel view count
-  async incrementView(reelId: string): Promise<void> {
-    try {
-      debug.dbQuery('reels', 'INCREMENT_VIEW', { reelId });
-      const { error } = await supabase
-        .rpc('increment_reel_view', { p_reel_id: reelId });
-
-      if (error) throw error;
-      debug.dbSuccess('reels', 'INCREMENT_VIEW', { reelId });
-    } catch (error) {
-      debug.dbError('reels', 'INCREMENT_VIEW', { error: (error as Error).message });
-    }
-  },
-
-  // Share reel
-  async shareReel(reelId: string, shareType: 'internal' | 'external' | 'story' = 'internal', platform?: string): Promise<boolean> {
-    try {
-      debug.dbQuery('reel_shares', 'CREATE', { reelId, shareType, platform });
-      const { error } = await supabase
-        .from('reel_shares')
-        .insert([{
-          reel_id: reelId,
-          user_id: (await supabase.auth.getUser()).data.user?.id,
-          share_type: shareType,
-          platform,
-        }]);
-
-      if (error) throw error;
-      debug.dbSuccess('reel_shares', 'CREATE', { reelId });
-      return true;
-    } catch (error) {
-      debug.dbError('reel_shares', 'CREATE', { error: (error as Error).message });
-      return false;
-    }
-  },
-
-  // Get user's reels
-  async getUserReels(userId: string, limit: number = 20, offset: number = 0): Promise<Reel[]> {
-    try {
-      debug.dbQuery('user_reels', 'GET', { userId, limit, offset });
-      const { data, error } = await supabase
-        .from('reels')
-        .select(`
-          *,
-          user_profiles!inner(username, avatar, bio, location, age, is_host, hourly_rate, total_chats, response_time),
-          reel_music(title, artist, cover_url, duration)
-        `)
-        .eq('user_id', userId)
-        .eq('status', 'active')
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1);
-
-      if (error) throw error;
-      
-      const transformedReels: Reel[] = (data || []).map((reel: any) => ({
-        id: reel.id,
-        user: {
-          id: reel.user_id,
-          username: reel.user_profiles.username,
-          avatar: reel.user_profiles.avatar,
-          bio: reel.user_profiles.bio,
-          location: reel.user_profiles.location,
-          age: reel.user_profiles.age,
-          isHost: reel.user_profiles.is_host,
-          hourlyRate: reel.user_profiles.hourly_rate,
-          totalChats: reel.user_profiles.total_chats,
-          responseTime: reel.user_profiles.response_time,
-          isFollowing: false,
-        },
-        videoUrl: reel.video_url,
-        caption: reel.caption,
-        hashtags: reel.hashtags || [],
-        likes: reel.likes_count,
-        comments: reel.comments_count,
-        shares: reel.shares_count,
-        isLiked: false, // Would need to check separately
-        isSaved: false, // Would need to check separately
-        duration: reel.duration,
-        musicInfo: reel.reel_music?.[0] ? {
-          title: reel.reel_music[0].title,
-          artist: reel.reel_music[0].artist,
-          coverUrl: reel.reel_music[0].cover_url,
-        } : undefined,
-        timestamp: formatTimestamp(reel.created_at),
-      }));
-
-      debug.dbSuccess('user_reels', 'GET', { count: transformedReels.length });
-      return transformedReels;
-    } catch (error) {
-      debug.dbError('user_reels', 'GET', { error: (error as Error).message });
-      return [];
-    }
-  },
-
-  // Get trending reels based on engagement
-  async getTrendingReels(limit = 20, offset = 0): Promise<Reel[]> {
-    try {
-      debug.dbQuery('reels', 'TRENDING_SELECT', { limit, offset });
-      
-      const { data, error } = await supabase
-        .from('reels')
-        .select(`
-          *,
-          user_profiles!reels_user_id_fkey (
-            id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time
-          )
-        `)
-        .order('likes_count', { ascending: false })
-        .order('view_count', { ascending: false })
-        .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()) // Last 7 days
-        .range(offset, offset + limit - 1);
-
-      if (error || !data) {
-        debug.dbError('reels', 'TRENDING_SELECT', error);
-        return [];
-      }
-
-      debug.dbSuccess('reels', 'TRENDING_SELECT', { count: data.length });
-      
-      return data.map(reel => ({
-        id: reel.id,
-        user: {
-          id: reel.user_profiles.id,
-          username: reel.user_profiles.username || reel.user_profiles.handle || '',
-          avatar: reel.user_profiles.avatar || reel.user_profiles.profile_picture || '',
-          bio: reel.user_profiles.bio || '',
-          location: reel.user_profiles.location || '',
-          age: reel.user_profiles.age || 0,
-          isHost: reel.user_profiles.is_host || false,
-          hourlyRate: reel.user_profiles.hourly_rate || 0,
-          totalChats: reel.user_profiles.total_chats || 0,
-          responseTime: reel.user_profiles.response_time || '5 min',
-          isFollowing: false,
-        },
-        videoUrl: reel.video_url,
-        caption: reel.caption || '',
-        hashtags: reel.hashtags || [],
-        likes: reel.likes_count || 0,
-        likesCount: reel.likes_count || 0,
-        comments: reel.comments_count || 0,
-        commentsCount: reel.comments_count || 0,
-        shares: reel.shares_count || 0,
-        sharesCount: reel.shares_count || 0,
-        viewCount: reel.view_count || 0,
-        isLiked: false,
-        isSaved: false,
-        isTrending: true, // These are trending by definition
-        duration: reel.duration || 0,
-        location: reel.location || '',
-        thumbnailUrl: reel.thumbnail_url,
-        musicInfo: reel.music_title ? {
-          title: reel.music_title,
-          artist: reel.music_artist || '',
-          coverUrl: reel.music_cover_url || '',
-        } : undefined,
-        musicTitle: reel.music_title,
-        musicArtist: reel.music_artist,
-        musicCoverUrl: reel.music_cover_url,
-        timestamp: reel.created_at,
-        createdAt: reel.created_at,
-        updatedAt: reel.updated_at,
-      }));
-    } catch (error) {
-      debug.dbError('reels', 'TRENDING_SELECT', { error: (error as Error).message });
-      return [];
-    }
-  },
-
-  // Get reels by hashtags
-  async getReelsByHashtags(hashtags: string[], limit = 20, offset = 0): Promise<Reel[]> {
-    try {
-      debug.dbQuery('reels', 'HASHTAG_SELECT', { hashtags, limit, offset });
-      
-      const { data, error } = await supabase
-        .from('reels')
-        .select(`
-          *,
-          user_profiles!reels_user_id_fkey (
-            id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time
-          )
-        `)
-        .overlaps('hashtags', hashtags)
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1);
-
-      if (error || !data) {
-        debug.dbError('reels', 'HASHTAG_SELECT', error);
-        return [];
-      }
-
-      debug.dbSuccess('reels', 'HASHTAG_SELECT', { count: data.length, hashtags });
-      
-      return data.map(reel => ({
-        id: reel.id,
-        user: {
-          id: reel.user_profiles.id,
-          username: reel.user_profiles.username || reel.user_profiles.handle || '',
-          avatar: reel.user_profiles.avatar || reel.user_profiles.profile_picture || '',
-          bio: reel.user_profiles.bio || '',
-          location: reel.user_profiles.location || '',
-          age: reel.user_profiles.age || 0,
-          isHost: reel.user_profiles.is_host || false,
-          hourlyRate: reel.user_profiles.hourly_rate || 0,
-          totalChats: reel.user_profiles.total_chats || 0,
-          responseTime: reel.user_profiles.response_time || '5 min',
-          isFollowing: false,
-        },
-        videoUrl: reel.video_url,
-        caption: reel.caption || '',
-        hashtags: reel.hashtags || [],
-        likes: reel.likes_count || 0,
-        likesCount: reel.likes_count || 0,
-        comments: reel.comments_count || 0,
-        commentsCount: reel.comments_count || 0,
-        shares: reel.shares_count || 0,
-        sharesCount: reel.shares_count || 0,
-        viewCount: reel.view_count || 0,
-        isLiked: false,
-        isSaved: false,
-        isTrending: (reel.likes_count || 0) > 1000 || (reel.view_count || 0) > 10000,
-        duration: reel.duration || 0,
-        location: reel.location || '',
-        thumbnailUrl: reel.thumbnail_url,
-        musicInfo: reel.music_title ? {
-          title: reel.music_title,
-          artist: reel.music_artist || '',
-          coverUrl: reel.music_cover_url || '',
-        } : undefined,
-        musicTitle: reel.music_title,
-        musicArtist: reel.music_artist,
-        musicCoverUrl: reel.music_cover_url,
-        timestamp: reel.created_at,
-        createdAt: reel.created_at,
-        updatedAt: reel.updated_at,
-      }));
-    } catch (error) {
-      debug.dbError('reels', 'HASHTAG_SELECT', { error: (error as Error).message });
-      return [];
-    }
-  },
-
-  // Delete a reel
-  async deleteReel(reelId: string, userId: string): Promise<boolean> {
-    try {
-      debug.dbQuery('reels', 'DELETE', { reelId, userId });
-      
-      // First verify the user owns this reel
-      const { data: reel, error: verifyError } = await supabase
-        .from('reels')
-        .select('user_id')
-        .eq('id', reelId)
-        .eq('user_id', userId)
-        .single();
-
-      if (verifyError || !reel) {
-        debug.dbError('reels', 'DELETE_VERIFY', { error: 'Reel not found or user not authorized' });
-        return false;
-      }
-
-      // Delete the reel (CASCADE will handle related records)
-      const { error: deleteError } = await supabase
-        .from('reels')
-        .delete()
-        .eq('id', reelId)
-        .eq('user_id', userId);
-
-      if (deleteError) {
-        debug.dbError('reels', 'DELETE', deleteError);
-        return false;
-      }
-
-      debug.dbSuccess('reels', 'DELETE', { reelId, userId });
-      return true;
-    } catch (error) {
-      debug.dbError('reels', 'DELETE', { error: (error as Error).message });
-      return false;
-    }
-  },
-
-  // Get reels by user
-  async getReelsByUser(userId: string, limit = 20, offset = 0): Promise<Reel[]> {
-    try {
-      debug.dbQuery('reels', 'USER_SELECT', { userId, limit, offset });
-      
-      const { data, error } = await supabase
-        .from('reels')
-        .select(`
-          *,
-          user_profiles!reels_user_id_fkey (
-            id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time
-          )
-        `)
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1);
-
-      if (error || !data) {
-        debug.dbError('reels', 'USER_SELECT', error);
-        return [];
-      }
-
-      debug.dbSuccess('reels', 'USER_SELECT', { count: data.length, userId });
-      
-      return data.map(reel => ({
-        id: reel.id,
-        user: {
-          id: reel.user_profiles.id,
-          username: reel.user_profiles.username || reel.user_profiles.handle || '',
-          avatar: reel.user_profiles.avatar || reel.user_profiles.profile_picture || '',
-          bio: reel.user_profiles.bio || '',
-          location: reel.user_profiles.location || '',
-          age: reel.user_profiles.age || 0,
-          isHost: reel.user_profiles.is_host || false,
-          hourlyRate: reel.user_profiles.hourly_rate || 0,
-          totalChats: reel.user_profiles.total_chats || 0,
-          responseTime: reel.user_profiles.response_time || '5 min',
-          isFollowing: false,
-        },
-        videoUrl: reel.video_url,
-        caption: reel.caption || '',
-        hashtags: reel.hashtags || [],
-        likes: reel.likes_count || 0,
-        likesCount: reel.likes_count || 0,
-        comments: reel.comments_count || 0,
-        commentsCount: reel.comments_count || 0,
-        shares: reel.shares_count || 0,
-        sharesCount: reel.shares_count || 0,
-        viewCount: reel.view_count || 0,
-        isLiked: false,
-        isSaved: false,
-        isTrending: (reel.likes_count || 0) > 1000 || (reel.view_count || 0) > 10000,
-        duration: reel.duration || 0,
-        location: reel.location || '',
-        thumbnailUrl: reel.thumbnail_url,
-        musicInfo: reel.music_title ? {
-          title: reel.music_title,
-          artist: reel.music_artist || '',
-          coverUrl: reel.music_cover_url || '',
-        } : undefined,
-        musicTitle: reel.music_title,
-        musicArtist: reel.music_artist,
-        musicCoverUrl: reel.music_cover_url,
-        timestamp: reel.created_at,
-        createdAt: reel.created_at,
-        updatedAt: reel.updated_at,
-      }));
-    } catch (error) {
-      debug.dbError('reels', 'USER_SELECT', { error: (error as Error).message });
-      return [];
     }
   },
 };
@@ -2183,46 +1624,20 @@ export const storageService = {
       const startTime = Date.now();
       debug.apiCall('storage', 'uploadImage', { bucket, userId, file: file.name });
       
-      // Validate inputs
-      if (!file.uri || !userId) {
-        throw new Error('Missing required parameters: file.uri or userId');
-      }
-      
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'UPLOAD_IMAGE_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
-=======
-      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-      
       // Generate unique filename
       const timestamp = Date.now();
       const extension = file.name?.split('.').pop() || 'jpg';
       const folder = options.folder || 'uploads';
       const fileName = `${userId}/${folder}/${timestamp}.${extension}`;
-
-      // Convert file URI to binary data
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'UPLOAD_IMAGE_READ', `Reading file from: ${file.uri}`);
-=======
-      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_READ', `Reading file from: ${file.uri}`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-      const uint8Array = await readUriToUint8Array(file.uri);
       
-      // Validate file size
-      if (uint8Array.byteLength === 0) {
-        throw new Error('File is empty (0 bytes)');
-      }
+      // Convert URI to blob
+      const response = await fetch(file.uri);
+      const blob = await response.blob();
       
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'UPLOAD_IMAGE_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
-=======
-      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-
-      // Upload to Supabase storage using Uint8Array
+      // Upload to Supabase storage
       const { data, error } = await supabase.storage
         .from(bucket)
-        .upload(fileName, uint8Array, {
+        .upload(fileName, blob, {
           contentType: file.type || 'image/jpeg',
           upsert: true,
         });
@@ -2230,11 +1645,7 @@ export const storageService = {
       if (error) {
         debug.apiError('storage', 'uploadImage', error);
         debugLogger.error('STORAGE', 'UPLOAD_IMAGE', 'Image upload failed', error);
-        throw error;
-      }
-
-      if (!data) {
-        throw new Error('No data returned from upload');
+        return null;
       }
 
       // Get public URL
@@ -2243,11 +1654,7 @@ export const storageService = {
         .getPublicUrl(fileName);
 
       debug.apiSuccess('storage', 'uploadImage', { url: publicUrl, path: fileName }, Date.now() - startTime);
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'UPLOAD_SUCCESS', `Image uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
-=======
-      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Image uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
+      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Image uploaded successfully: ${publicUrl}`);
       
       return { url: publicUrl, path: fileName };
     } catch (error) {
@@ -2270,46 +1677,20 @@ export const storageService = {
       const startTime = Date.now();
       debug.apiCall('storage', 'uploadVideo', { bucket, userId, file: file.name });
       
-      // Validate inputs
-      if (!file.uri || !userId) {
-        throw new Error('Missing required parameters: file.uri or userId');
-      }
-      
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'UPLOAD_VIDEO_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
-=======
-      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-      
       // Generate unique filename
       const timestamp = Date.now();
       const extension = file.name?.split('.').pop() || 'mp4';
       const folder = options.folder || 'videos';
       const fileName = `${userId}/${folder}/${timestamp}.${extension}`;
-
-      // Convert file URI to binary data
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'UPLOAD_VIDEO_READ', `Reading file from: ${file.uri}`);
-=======
-      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_READ', `Reading file from: ${file.uri}`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-      const uint8Array = await readUriToUint8Array(file.uri);
       
-      // Validate file size
-      if (uint8Array.byteLength === 0) {
-        throw new Error('Video file is empty (0 bytes)');
-      }
+      // Convert URI to blob
+      const response = await fetch(file.uri);
+      const blob = await response.blob();
       
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'UPLOAD_VIDEO_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
-=======
-      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
-
-      // Upload using Uint8Array to avoid 0-byte issues on native
+      // Upload to Supabase storage
       const { data, error } = await supabase.storage
         .from(bucket)
-        .upload(fileName, uint8Array, {
+        .upload(fileName, blob, {
           contentType: file.type || 'video/mp4',
           upsert: true,
         });
@@ -2317,11 +1698,7 @@ export const storageService = {
       if (error) {
         debug.apiError('storage', 'uploadVideo', error);
         debugLogger.error('STORAGE', 'UPLOAD_VIDEO', 'Video upload failed', error);
-        throw error;
-      }
-
-      if (!data) {
-        throw new Error('No data returned from video upload');
+        return null;
       }
 
       // Get public URL
@@ -2330,11 +1707,7 @@ export const storageService = {
         .getPublicUrl(fileName);
 
       debug.apiSuccess('storage', 'uploadVideo', { url: publicUrl, path: fileName }, Date.now() - startTime);
-<<<<<<< HEAD
-      debugLogger.log('STORAGE', 'UPLOAD_SUCCESS', `Video uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
-=======
-      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Video uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
->>>>>>> 0e356d2f2a1931a5955f36c8c4c868d085280160
+      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Video uploaded successfully: ${publicUrl}`);
       
       return { url: publicUrl, path: fileName };
     } catch (error) {
@@ -2360,7 +1733,7 @@ export const storageService = {
       }
 
       debug.apiSuccess('storage', 'deleteFile', { bucket, path }, Date.now() - startTime);
-      debugLogger.log('STORAGE', 'DELETE_SUCCESS', `File deleted successfully: ${path}`);
+      debugLogger.info('STORAGE', 'DELETE_SUCCESS', `File deleted successfully: ${path}`);
       
       return true;
     } catch (error) {
@@ -2383,7 +1756,7 @@ export const storageService = {
     try {
       const startTime = Date.now();
       debug.dbQuery('storage.objects', 'SELECT', { userId, type });
-      debugLogger.log('STORAGE', 'GET_USER_MEDIA_START', `Fetching media for user: ${userId}, type: ${type}`);
+      debugLogger.info('STORAGE', 'GET_USER_MEDIA_START', `Fetching media for user: ${userId}, type: ${type}`);
       
       // Query storage objects for the user
       const { data, error } = await supabase.storage
@@ -2400,7 +1773,7 @@ export const storageService = {
       }
 
       if (!data || data.length === 0) {
-        debugLogger.log('STORAGE', 'GET_USER_MEDIA', `No media files found for user: ${userId}`);
+        debugLogger.info('STORAGE', 'GET_USER_MEDIA', `No media files found for user: ${userId}`);
         return [];
       }
 
@@ -2428,7 +1801,7 @@ export const storageService = {
         });
 
       debug.dbSuccess('storage.objects', 'SELECT', { userId, count: mediaFiles.length }, Date.now() - startTime);
-      debugLogger.log('STORAGE', 'GET_USER_MEDIA_SUCCESS', `Found ${mediaFiles.length} media files for user: ${userId}`);
+      debugLogger.info('STORAGE', 'GET_USER_MEDIA_SUCCESS', `Found ${mediaFiles.length} media files for user: ${userId}`);
       
       return mediaFiles;
     } catch (error) {
@@ -2743,477 +2116,6 @@ export const commentService = {
 };
 
 // =====================================================
-// MESSAGE OPERATIONS
-// =====================================================
-
-export const messageService = {
-  // Get conversations for a user
-  async getConversations(userId: string): Promise<Conversation[]> {
-    try {
-      const startTime = Date.now();
-      debug.dbQuery('conversations', 'SELECT', { userId });
-      debugLogger.log('MESSAGE', 'GET_CONVERSATIONS_START', `Fetching conversations for user: ${userId}`);
-
-      const { data, error } = await supabase
-        .from('conversations')
-        .select(`
-          *,
-          conversation_participants!inner(
-            user_id,
-            user_profiles!conversation_participants_user_id_fkey(
-              id, username, handle, full_name, avatar, profile_picture, is_online, last_seen
-            )
-          ),
-          messages(
-            id, content, created_at, sender_id, is_read, message_type,
-            user_profiles!messages_sender_id_fkey(username, avatar)
-          )
-        `)
-        .eq('conversation_participants.user_id', userId)
-        .order('updated_at', { ascending: false });
-
-      if (error) {
-        debug.dbError('conversations', 'SELECT', error);
-        debugLogger.error('MESSAGE', 'GET_CONVERSATIONS_ERROR', 'Failed to fetch conversations', error);
-        return [];
-      }
-
-      if (!data || data.length === 0) {
-        debugLogger.log('MESSAGE', 'GET_CONVERSATIONS_EMPTY', 'No conversations found');
-        return [];
-      }
-
-      const conversations: Conversation[] = data.map((conv: any) => {
-        // Get the other participant (not the current user)
-        const otherParticipants = conv.conversation_participants
-          .filter((p: any) => p.user_id !== userId)
-          .map((p: any) => ({
-            id: p.user_profiles.id,
-            username: p.user_profiles.username || p.user_profiles.handle || '',
-            avatar: p.user_profiles.avatar || p.user_profiles.profile_picture || '',
-            fullName: p.user_profiles.full_name || '',
-            isOnline: p.user_profiles.is_online || false,
-            lastSeen: p.user_profiles.last_seen || '',
-          }));
-
-        // Get the latest message
-        const latestMessage = conv.messages && conv.messages.length > 0 
-          ? conv.messages.reduce((latest: any, msg: any) => 
-              new Date(msg.created_at) > new Date(latest.created_at) ? msg : latest
-            )
-          : null;
-
-        // Count unread messages
-        const unreadCount = conv.messages 
-          ? conv.messages.filter((msg: any) => 
-              msg.sender_id !== userId && !msg.is_read
-            ).length 
-          : 0;
-
-        return {
-          id: conv.id,
-          participants: otherParticipants,
-          lastMessage: latestMessage ? {
-            id: latestMessage.id,
-            senderId: latestMessage.sender_id,
-            receiverId: userId,
-            content: latestMessage.content,
-            timestamp: latestMessage.created_at,
-            conversationId: conv.id,
-            isRead: latestMessage.is_read,
-            createdAt: latestMessage.created_at,
-          } : {
-            id: '',
-            senderId: '',
-            receiverId: userId,
-            content: 'No messages yet',
-            timestamp: conv.created_at,
-            conversationId: conv.id,
-            isRead: true,
-            createdAt: conv.created_at,
-          },
-          unreadCount,
-          createdAt: conv.created_at,
-          updatedAt: conv.updated_at,
-        };
-      });
-
-      debug.dbSuccess('conversations', 'SELECT', { userId, count: conversations.length }, Date.now() - startTime);
-      debugLogger.success('MESSAGE', 'GET_CONVERSATIONS_SUCCESS', `Fetched ${conversations.length} conversations`, { userId });
-      
-      return conversations;
-    } catch (error) {
-      debugLogger.error('MESSAGE', 'GET_CONVERSATIONS_EXCEPTION', 'Exception occurred while fetching conversations', error);
-      return [];
-    }
-  },
-
-  // Get messages for a conversation
-  async getMessages(conversationId: string, userId: string): Promise<Message[]> {
-    try {
-      const startTime = Date.now();
-      debug.dbQuery('messages', 'SELECT', { conversationId });
-      debugLogger.log('MESSAGE', 'GET_MESSAGES_START', `Fetching messages for conversation: ${conversationId}`);
-
-      const { data, error } = await supabase
-        .from('messages')
-        .select(`
-          *,
-          user_profiles!messages_sender_id_fkey(
-            id, username, handle, avatar, profile_picture
-          )
-        `)
-        .eq('conversation_id', conversationId)
-        .order('created_at', { ascending: true });
-
-      if (error) {
-        debug.dbError('messages', 'SELECT', error);
-        debugLogger.error('MESSAGE', 'GET_MESSAGES_ERROR', 'Failed to fetch messages', error);
-        return [];
-      }
-
-      if (!data) {
-        debugLogger.log('MESSAGE', 'GET_MESSAGES_EMPTY', 'No messages found');
-        return [];
-      }
-
-      const messages: Message[] = data.map((msg: any) => ({
-        id: msg.id,
-        senderId: msg.sender_id,
-        receiverId: userId,
-        content: msg.content,
-        timestamp: msg.created_at,
-        conversationId: msg.conversation_id,
-        isRead: msg.is_read,
-        createdAt: msg.created_at,
-      }));
-
-      debug.dbSuccess('messages', 'SELECT', { conversationId, count: messages.length }, Date.now() - startTime);
-      debugLogger.success('MESSAGE', 'GET_MESSAGES_SUCCESS', `Fetched ${messages.length} messages`, { conversationId });
-      
-      return messages;
-    } catch (error) {
-      debugLogger.error('MESSAGE', 'GET_MESSAGES_EXCEPTION', 'Exception occurred while fetching messages', error);
-      return [];
-    }
-  },
-
-  // Send a new message
-  async sendMessage(conversationId: string, senderId: string, content: string, messageType: string = 'text'): Promise<Message | null> {
-    try {
-      const startTime = Date.now();
-      debug.userAction('Send message', { conversationId, senderId, messageType });
-      debugLogger.log('MESSAGE', 'SEND_MESSAGE_START', `Sending message`, { conversationId, senderId, contentLength: content.length });
-
-      const { data, error } = await supabase
-        .from('messages')
-        .insert({
-          conversation_id: conversationId,
-          sender_id: senderId,
-          content,
-          message_type: messageType,
-        })
-        .select(`
-          *,
-          user_profiles!messages_sender_id_fkey(
-            id, username, handle, avatar, profile_picture
-          )
-        `)
-        .single();
-
-      if (error) {
-        debug.dbError('messages', 'INSERT', error);
-        debugLogger.error('MESSAGE', 'SEND_MESSAGE_ERROR', 'Failed to send message', error);
-        return null;
-      }
-
-      // Update conversation timestamp
-      await supabase
-        .from('conversations')
-        .update({ updated_at: new Date().toISOString() })
-        .eq('id', conversationId);
-
-      const message: Message = {
-        id: data.id,
-        senderId: data.sender_id,
-        receiverId: '', // Will be filled by the recipient
-        content: data.content,
-        timestamp: data.created_at,
-        conversationId: data.conversation_id,
-        isRead: data.is_read,
-        createdAt: data.created_at,
-      };
-
-      debug.dbSuccess('messages', 'INSERT', { conversationId, messageId: data.id }, Date.now() - startTime);
-      debugLogger.success('MESSAGE', 'SEND_MESSAGE_SUCCESS', `Message sent successfully`, { messageId: data.id });
-      
-      return message;
-    } catch (error) {
-      debugLogger.error('MESSAGE', 'SEND_MESSAGE_EXCEPTION', 'Exception occurred while sending message', error);
-      return null;
-    }
-  },
-
-  // Create a new conversation
-  async createConversation(participants: string[]): Promise<string | null> {
-    try {
-      const startTime = Date.now();
-      debug.userAction('Create conversation', { participants });
-      debugLogger.log('MESSAGE', 'CREATE_CONVERSATION_START', `Creating conversation`, { participantCount: participants.length });
-
-      // Check if conversation already exists between these participants
-      if (participants.length === 2) {
-        const { data: existingConv, error: checkError } = await supabase
-          .rpc('find_direct_conversation', {
-            user1_id: participants[0],
-            user2_id: participants[1]
-          });
-
-        if (!checkError && existingConv && existingConv.length > 0) {
-          debugLogger.log('MESSAGE', 'CONVERSATION_EXISTS', 'Conversation already exists', { conversationId: existingConv[0].id });
-          return existingConv[0].id;
-        }
-      }
-
-      // Create new conversation
-      const { data: conversation, error: convError } = await supabase
-        .from('conversations')
-        .insert({ 
-          conversation_type: participants.length === 2 ? 'direct' : 'group',
-          title: participants.length > 2 ? 'Group Chat' : null
-        })
-        .select()
-        .single();
-
-      if (convError) {
-        debug.dbError('conversations', 'INSERT', convError);
-        debugLogger.error('MESSAGE', 'CREATE_CONVERSATION_ERROR', 'Failed to create conversation', convError);
-        return null;
-      }
-
-      // Add participants
-      const participantData = participants.map(userId => ({
-        conversation_id: conversation.id,
-        user_id: userId,
-      }));
-
-      const { error: participantError } = await supabase
-        .from('conversation_participants')
-        .insert(participantData);
-
-      if (participantError) {
-        debug.dbError('conversation_participants', 'INSERT', participantError);
-        debugLogger.error('MESSAGE', 'ADD_PARTICIPANTS_ERROR', 'Failed to add participants', participantError);
-        return null;
-      }
-
-      debug.dbSuccess('conversations', 'CREATE', { conversationId: conversation.id }, Date.now() - startTime);
-      debugLogger.success('MESSAGE', 'CREATE_CONVERSATION_SUCCESS', `Conversation created successfully`, { conversationId: conversation.id });
-      
-      return conversation.id;
-    } catch (error) {
-      debugLogger.error('MESSAGE', 'CREATE_CONVERSATION_EXCEPTION', 'Exception occurred while creating conversation', error);
-      return null;
-    }
-  },
-
-  // Mark messages as read
-  async markAsRead(conversationId: string, userId: string): Promise<boolean> {
-    try {
-      const startTime = Date.now();
-      debug.userAction('Mark messages as read', { conversationId, userId });
-      debugLogger.log('MESSAGE', 'MARK_READ_START', `Marking messages as read`, { conversationId, userId });
-
-      const { error } = await supabase
-        .from('messages')
-        .update({ is_read: true })
-        .eq('conversation_id', conversationId)
-        .neq('sender_id', userId)
-        .eq('is_read', false);
-
-      if (error) {
-        debug.dbError('messages', 'UPDATE', error);
-        debugLogger.error('MESSAGE', 'MARK_READ_ERROR', 'Failed to mark messages as read', error);
-        return false;
-      }
-
-      debug.dbSuccess('messages', 'UPDATE', { conversationId }, Date.now() - startTime);
-      debugLogger.success('MESSAGE', 'MARK_READ_SUCCESS', `Messages marked as read`, { conversationId });
-      
-      return true;
-    } catch (error) {
-      debugLogger.error('MESSAGE', 'MARK_READ_EXCEPTION', 'Exception occurred while marking messages as read', error);
-      return false;
-    }
-  },
-
-  // Delete a message
-  async deleteMessage(messageId: string, userId: string): Promise<boolean> {
-    try {
-      const startTime = Date.now();
-      debug.userAction('Delete message', { messageId, userId });
-      debugLogger.log('MESSAGE', 'DELETE_MESSAGE_START', `Deleting message`, { messageId, userId });
-
-      const { error } = await supabase
-        .from('messages')
-        .delete()
-        .eq('id', messageId)
-        .eq('sender_id', userId);
-
-      if (error) {
-        debug.dbError('messages', 'DELETE', error);
-        debugLogger.error('MESSAGE', 'DELETE_MESSAGE_ERROR', 'Failed to delete message', error);
-        return false;
-      }
-
-      debug.dbSuccess('messages', 'DELETE', { messageId }, Date.now() - startTime);
-      debugLogger.success('MESSAGE', 'DELETE_MESSAGE_SUCCESS', `Message deleted successfully`, { messageId });
-      
-      return true;
-    } catch (error) {
-      debugLogger.error('MESSAGE', 'DELETE_MESSAGE_EXCEPTION', 'Exception occurred while deleting message', error);
-      return false;
-    }
-  },
-
-  // Get conversation participants
-  async getConversationParticipants(conversationId: string): Promise<User[]> {
-    try {
-      const startTime = Date.now();
-      debug.dbQuery('conversation_participants', 'SELECT', { conversationId });
-      debugLogger.log('MESSAGE', 'GET_PARTICIPANTS_START', `Fetching participants`, { conversationId });
-
-      const { data, error } = await supabase
-        .from('conversation_participants')
-        .select(`
-          user_profiles!conversation_participants_user_id_fkey(
-            id, username, handle, full_name, avatar, profile_picture, 
-            bio, location, age, is_host, is_online, last_seen
-          )
-        `)
-        .eq('conversation_id', conversationId);
-
-      if (error) {
-        debug.dbError('conversation_participants', 'SELECT', error);
-        debugLogger.error('MESSAGE', 'GET_PARTICIPANTS_ERROR', 'Failed to fetch participants', error);
-        return [];
-      }
-
-      if (!data) return [];
-
-      const participants: User[] = data.map((p: any) => ({
-        id: p.user_profiles.id,
-        username: p.user_profiles.username || p.user_profiles.handle || '',
-        avatar: p.user_profiles.avatar || p.user_profiles.profile_picture || '',
-        fullName: p.user_profiles.full_name || '',
-        bio: p.user_profiles.bio || '',
-        location: p.user_profiles.location || '',
-        age: p.user_profiles.age || 0,
-        isHost: p.user_profiles.is_host || false,
-        isOnline: p.user_profiles.is_online || false,
-        lastSeen: p.user_profiles.last_seen || '',
-      }));
-
-      debug.dbSuccess('conversation_participants', 'SELECT', { conversationId, count: participants.length }, Date.now() - startTime);
-      debugLogger.success('MESSAGE', 'GET_PARTICIPANTS_SUCCESS', `Fetched ${participants.length} participants`, { conversationId });
-      
-      return participants;
-    } catch (error) {
-      debugLogger.error('MESSAGE', 'GET_PARTICIPANTS_EXCEPTION', 'Exception occurred while fetching participants', error);
-      return [];
-    }
-  },
-
-  // Search conversations
-  async searchConversations(userId: string, query: string): Promise<Conversation[]> {
-    try {
-      const startTime = Date.now();
-      debug.searchStart('conversations', { userId, query });
-      debugLogger.log('MESSAGE', 'SEARCH_CONVERSATIONS_START', `Searching conversations`, { userId, query });
-
-      const { data, error } = await supabase
-        .from('conversations')
-        .select(`
-          *,
-          conversation_participants!inner(
-            user_id,
-            user_profiles!conversation_participants_user_id_fkey(
-              id, username, handle, full_name, avatar, profile_picture
-            )
-          ),
-          messages(id, content, created_at, sender_id, is_read)
-        `)
-        .eq('conversation_participants.user_id', userId)
-        .ilike('conversation_participants.user_profiles.username', `%${query}%`)
-        .order('updated_at', { ascending: false });
-
-      if (error) {
-        debug.searchError('conversations', error);
-        debugLogger.error('MESSAGE', 'SEARCH_CONVERSATIONS_ERROR', 'Failed to search conversations', error);
-        return [];
-      }
-
-      // Format the data similar to getConversations
-      const conversations = data?.map((conv: any) => {
-        const otherParticipants = conv.conversation_participants
-          .filter((p: any) => p.user_id !== userId)
-          .map((p: any) => ({
-            id: p.user_profiles.id,
-            username: p.user_profiles.username || p.user_profiles.handle || '',
-            avatar: p.user_profiles.avatar || p.user_profiles.profile_picture || '',
-            fullName: p.user_profiles.full_name || '',
-          }));
-
-        const latestMessage = conv.messages && conv.messages.length > 0 
-          ? conv.messages.reduce((latest: any, msg: any) => 
-              new Date(msg.created_at) > new Date(latest.created_at) ? msg : latest
-            )
-          : null;
-
-        return {
-          id: conv.id,
-          participants: otherParticipants,
-          lastMessage: latestMessage ? {
-            id: latestMessage.id,
-            senderId: latestMessage.sender_id,
-            receiverId: userId,
-            content: latestMessage.content,
-            timestamp: latestMessage.created_at,
-            conversationId: conv.id,
-            isRead: latestMessage.is_read,
-            createdAt: latestMessage.created_at,
-          } : {
-            id: '',
-            senderId: '',
-            receiverId: userId,
-            content: 'No messages yet',
-            timestamp: conv.created_at,
-            conversationId: conv.id,
-            isRead: true,
-            createdAt: conv.created_at,
-          },
-          unreadCount: conv.messages 
-            ? conv.messages.filter((msg: any) => 
-                msg.sender_id !== userId && !msg.is_read
-              ).length 
-            : 0,
-          createdAt: conv.created_at,
-          updatedAt: conv.updated_at,
-        };
-      }) || [];
-
-      debug.searchSuccess('conversations', { query, count: conversations.length }, Date.now() - startTime);
-      debugLogger.success('MESSAGE', 'SEARCH_CONVERSATIONS_SUCCESS', `Found ${conversations.length} conversations`, { query });
-      
-      return conversations;
-    } catch (error) {
-      debugLogger.error('MESSAGE', 'SEARCH_CONVERSATIONS_EXCEPTION', 'Exception occurred while searching conversations', error);
-      return [];
-    }
-  },
-};
-
-// =====================================================
 // EXPORT ALL SERVICES
 // =====================================================
 
@@ -3227,5 +2129,4 @@ export const dataService = {
   review: reviewService,
   storage: storageService,
   comment: commentService,
-  message: messageService,
 }; 

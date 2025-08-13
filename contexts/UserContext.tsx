@@ -5,7 +5,6 @@ import { User as SupabaseUser } from '@supabase/supabase-js';
 import { User } from '../types';
 import { router } from 'expo-router';
 import { dataService } from '@/services/dataService';
-import { notificationService } from '@/services/notificationService';
 
 const USER_STORAGE_KEY = '@user_data';
 
@@ -106,14 +105,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           if (userProfile) {
             await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(userProfile));
             dispatch({ type: 'SET_USER', payload: userProfile });
-            
-            // Initialize notifications for the user
-            try {
-              await notificationService.initialize(userProfile.id);
-              console.log('🔔 Notifications initialized for user');
-            } catch (notificationError) {
-              console.error('❌ Failed to initialize notifications:', notificationError);
-            }
           }
         }
       }

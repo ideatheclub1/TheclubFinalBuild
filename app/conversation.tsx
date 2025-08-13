@@ -1,3 +1,3 @@
-import ConversationScreenSimple from '../screens/ConversationScreenSimple';
+import ConversationScreen from '../screens/ConversationScreen';
 
-export default ConversationScreenSimple;
+export default ConversationScreen;

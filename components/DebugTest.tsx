@@ -1,135 +1,97 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
-import { debug, debugLogger } from '@/utils/debugLogger';
+import React, { useEffect } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { useDebugLogger, debug } from '@/utils/debugLogger';
 
-const DebugTest = () => {
-  const handleTest = () => {
-    console.log('🔥 STARTING DEBUG TEST...');
+export default function DebugTest() {
+  const debugLogger = useDebugLogger('DebugTest');
+
+  useEffect(() => {
+    debug.pageLoad('DebugTest component loaded');
+    debug.userAction('DebugTest mounted');
+  }, []);
+
+  const testDebugFunctions = () => {
+    debug.userAction('Test button pressed');
+    debug.apiCall('/test', 'GET', { test: true });
+    debug.dbQuery('test_table', 'SELECT', { limit: 10 });
+    debug.searchStart('test query', { filters: { category: 'test' } });
     
-    // Direct console.log test
-    console.log('1. Direct console.log works!');
-    console.warn('2. Direct console.warn works!');
-    console.error('3. Direct console.error works!');
-    
-    // Debug logger test
-    const result = debug.test();
-    
-    // Show alert with result
-    Alert.alert('Debug Test', result);
-    
-    // Additional tests
-    debug.pageLoad('DebugTest', { testData: 'sample' });
-    debug.userAction('TEST_BUTTON_PRESS', { timestamp: new Date().toISOString() });
-    debug.apiCall('test-endpoint', 'GET', { test: true });
-    debug.apiSuccess('test-endpoint', 'GET', { success: true }, 250);
-    
-    console.log('📊 Debug logger stats:');
-    console.log('- Enabled:', debugLogger['isEnabled']);
-    console.log('- Total logs:', debugLogger.getLogs().length);
-    console.log('- Last 3 logs:', debugLogger.getLogs().slice(-3));
+    setTimeout(() => {
+      debug.apiSuccess('/test', 'GET', { data: 'test response' }, 500);
+      debug.dbSuccess('test_table', 'SELECT', { results: ['item1', 'item2'] }, 300);
+      debug.searchComplete('test query', ['result1', 'result2'], 800);
+    }, 1000);
   };
 
-  const handleClearLogs = () => {
-    debugLogger.clear();
-    console.log('🧹 Logs cleared!');
-  };
-
-  const handleShowLogs = () => {
-    const logs = debugLogger.getLogs();
-    console.log('📋 ALL DEBUG LOGS:');
-    console.log(JSON.stringify(logs, null, 2));
-    Alert.alert('Logs', `Found ${logs.length} logs. Check console for details.`);
-  };
-
-  const handleToggleDebug = () => {
-    const currentState = debugLogger['isEnabled'];
-    debugLogger.setEnabled(!currentState);
-    Alert.alert('Debug Logger', `Debug logging ${!currentState ? 'enabled' : 'disabled'}`);
+  const testError = () => {
+    debug.userAction('Error test button pressed');
+    debug.apiError('/test', 'GET', { error: 'Test error message' });
+    debug.dbError('test_table', 'SELECT', { error: 'Database test error' });
+    debug.searchError('test query', { error: 'Search test error' });
   };
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>🔧 Debug Logger Test</Text>
-      <Text style={styles.subtitle}>Check your terminal/console for output</Text>
+      <Text style={styles.title}>Debug System Test</Text>
+      <Text style={styles.subtitle}>Check terminal for colored logs</Text>
       
-      <TouchableOpacity style={styles.button} onPress={handleTest}>
-        <Text style={styles.buttonText}>🧪 Run Debug Test</Text>
+      <TouchableOpacity style={styles.button} onPress={testDebugFunctions}>
+        <Text style={styles.buttonText}>Test Debug Functions</Text>
       </TouchableOpacity>
       
-      <TouchableOpacity style={styles.button} onPress={handleShowLogs}>
-        <Text style={styles.buttonText}>📋 Show All Logs</Text>
+      <TouchableOpacity style={[styles.button, styles.errorButton]} onPress={testError}>
+        <Text style={styles.buttonText}>Test Error Logging</Text>
       </TouchableOpacity>
       
-      <TouchableOpacity style={styles.button} onPress={handleClearLogs}>
-        <Text style={styles.buttonText}>🧹 Clear Logs</Text>
-      </TouchableOpacity>
-      
-      <TouchableOpacity style={styles.button} onPress={handleToggleDebug}>
-        <Text style={styles.buttonText}>🔄 Toggle Debug Logger</Text>
-      </TouchableOpacity>
-      
-      <View style={styles.infoBox}>
-        <Text style={styles.infoTitle}>Where to look for logs:</Text>
-        <Text style={styles.infoText}>• Terminal running Metro bundler</Text>
-        <Text style={styles.infoText}>• Browser console (if testing in web)</Text>
-        <Text style={styles.infoText}>• Expo CLI terminal output</Text>
-        <Text style={styles.infoText}>• React Native debugger</Text>
-      </View>
+      <Text style={styles.info}>
+        Look for the 🐛 button in the top-right corner to open the debug panel!
+      </Text>
     </View>
   );
-};
+}
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 20,
-    backgroundColor: '#f5f5f5',
     justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#1E1E1E',
   },
   title: {
     fontSize: 24,
     fontWeight: 'bold',
-    textAlign: 'center',
+    color: '#FFFFFF',
     marginBottom: 10,
-    color: '#333',
   },
   subtitle: {
     fontSize: 16,
-    textAlign: 'center',
+    color: '#CCCCCC',
     marginBottom: 30,
-    color: '#666',
+    textAlign: 'center',
   },
   button: {
-    backgroundColor: '#007AFF',
-    padding: 15,
-    borderRadius: 10,
+    backgroundColor: '#10B981',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
     marginBottom: 15,
-    alignItems: 'center',
+    minWidth: 200,
+  },
+  errorButton: {
+    backgroundColor: '#EF4444',
   },
   buttonText: {
-    color: 'white',
+    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
+    textAlign: 'center',
   },
-  infoBox: {
-    backgroundColor: '#e8f4f8',
-    padding: 15,
-    borderRadius: 10,
-    marginTop: 20,
-    borderLeftWidth: 4,
-    borderLeftColor: '#007AFF',
-  },
-  infoTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 10,
-    color: '#333',
-  },
-  infoText: {
+  info: {
     fontSize: 14,
-    marginBottom: 5,
-    color: '#555',
+    color: '#888888',
+    textAlign: 'center',
+    marginTop: 20,
+    paddingHorizontal: 20,
   },
-});
-
-export default DebugTest;
+}); 
