@@ -107,7 +107,7 @@ export default function SearchScreen() {
   // Search users from database
   const searchUsers = useCallback(async () => {
     if (!currentUser) {
-      debugLogger.log('SEARCH_SKIP', 'No current user, skipping search');
+      debugLogger.info('SEARCH_SKIP', 'No current user, skipping search');
       return;
     }
     
@@ -120,9 +120,9 @@ export default function SearchScreen() {
       const isUsername = isUsernameSearch(searchQuery);
       
       if (isUsername) {
-        debugLogger.log('SEARCH_TYPE', 'Username search detected, bypassing filters');
+        debugLogger.info('SEARCH_TYPE', 'Username search detected, bypassing filters');
       } else {
-        debugLogger.log('SEARCH_TYPE', 'General search, applying filters');
+        debugLogger.info('SEARCH_TYPE', 'General search, applying filters');
       }
       
       const searchParams = {
@@ -142,7 +142,7 @@ export default function SearchScreen() {
         currentUserId: currentUser.id,
       };
       
-      debugLogger.log('SEARCH_PARAMS', 'Search parameters prepared', { 
+      debugLogger.info('SEARCH_PARAMS', 'Search parameters prepared', { 
         ...searchParams, 
         isUsernameSearch: isUsername,
         originalFilters: filters 
@@ -158,7 +158,7 @@ export default function SearchScreen() {
       debugLogger.error('SEARCH_ERROR', 'Error searching users', err);
       setError('Failed to search users. Please try again.');
     } finally {
-      debugLogger.log('SEARCH_COMPLETE', 'Search operation completed');
+      debugLogger.info('SEARCH_COMPLETE', 'Search operation completed');
       setIsLoading(false);
     }
   }, [searchQuery, searchLocation, searchLatitude, searchLongitude, filters, currentUser]);
@@ -174,23 +174,85 @@ export default function SearchScreen() {
 
   // Initial search on component mount
   useEffect(() => {
-    debugLogger.log('COMPONENT_MOUNT', `Component mounted, currentUser: ${currentUser?.id}`);
+    debugLogger.info('COMPONENT_MOUNT', `Component mounted, currentUser: ${currentUser?.id}`);
     searchUsers();
   }, []);
 
   // Handle filter changes
   const handleFilterChange = (newFilters: typeof filters) => {
-    debugLogger.log('FILTER_CHANGE', 'Filters updated', { oldFilters: filters, newFilters });
+    debugLogger.info('FILTER_CHANGE', 'Filters updated', { oldFilters: filters, newFilters });
     setFilters(newFilters);
   };
 
   const handleMessagesPress = () => {
-    debugLogger.log('NAVIGATION', 'Navigating to messages');
+    debugLogger.info('NAVIGATION', 'Navigating to messages');
     router.push('/(tabs)/messages');
   };
 
+  // Smart message handler - checks for existing conversation first
+  const handleMessageUser = async (user: User) => {
+    if (!currentUser?.id) {
+      Alert.alert('Error', 'Please log in to send messages');
+      return;
+    }
+
+    if (user.id === currentUser.id) {
+      Alert.alert('Info', 'You cannot message yourself');
+      return;
+    }
+
+    try {
+      debugLogger.info('MESSAGE_USER', 'Checking for existing conversation', { 
+        currentUserId: currentUser.id,
+        targetUserId: user.id,
+        targetUserName: user.fullName || user.username 
+      });
+
+      // First, check if conversation already exists
+      const existingConversationId = await dataService.message.findConversationWithUser(
+        currentUser.id, 
+        user.id
+      );
+
+      if (existingConversationId) {
+        // Redirect to existing conversation
+        debugLogger.success('MESSAGE_USER', 'Redirecting to existing conversation', { 
+          conversationId: existingConversationId 
+        });
+        
+        router.push({
+          pathname: '/conversation',
+          params: { 
+            mode: 'chat',
+            conversationId: existingConversationId,
+            userId: user.id,
+            userName: user.fullName || user.username
+          }
+        });
+      } else {
+        // Create new conversation
+        debugLogger.info('MESSAGE_USER', 'Creating new conversation', { 
+          targetUserId: user.id,
+          targetUserName: user.fullName || user.username 
+        });
+        
+        router.push({
+          pathname: '/conversation',
+          params: { 
+            mode: 'chat',
+            createWithUserId: user.id,
+            userName: user.fullName || user.username
+          }
+        });
+      }
+    } catch (error) {
+      debugLogger.error('MESSAGE_USER', 'Failed to handle message user', error);
+      Alert.alert('Error', 'Failed to open conversation. Please try again.');
+    }
+  };
+
   const handleNotificationPress = () => {
-    debugLogger.log('USER_ACTION', 'Notification button pressed');
+    debugLogger.info('USER_ACTION', 'Notification button pressed');
     // Handle notification press
   };
 
@@ -221,7 +283,7 @@ export default function SearchScreen() {
     };
 
     const handlePress = () => {
-      debugLogger.log('USER_ACTION', `User card pressed for user: ${user.id}`, { userId: user.id, userName: user.fullName });
+      debugLogger.info('USER_ACTION', `User card pressed for user: ${user.id}`, { userId: user.id, userName: user.fullName });
       router.push({
         pathname: '/ProfileScreen',
         params: { userId: user.id }
@@ -234,12 +296,8 @@ export default function SearchScreen() {
     }));
 
     return (
-      <AnimatedTouchableOpacity
+      <Animated.View
         style={[styles.userCard, animatedStyle]}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-        onPress={handlePress}
-        activeOpacity={0.9}
       >
         <BlurView intensity={20} style={styles.cardBlur}>
           <LinearGradient
@@ -293,10 +351,37 @@ export default function SearchScreen() {
               <Text style={[styles.priceText, { fontFamily: 'Inter_600SemiBold' }]}>
                 ${user.hourlyRate}/hr
               </Text>
+              
+              {/* Action Buttons */}
+              <View style={styles.actionButtons}>
+                <TouchableOpacity 
+                  style={styles.messageButton}
+                  onPress={async (e) => {
+                    e.stopPropagation();
+                    await handleMessageUser(user);
+                  }}
+                >
+                  <MessageCircle size={14} color="#FFFFFF" />
+                  <Text style={styles.messageButtonText}>Message</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                  style={styles.profileButton}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    router.push({
+                      pathname: '/ProfileScreen',
+                      params: { userId: user.id }
+                    });
+                  }}
+                >
+                  <Text style={styles.profileButtonText}>Profile</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </LinearGradient>
         </BlurView>
-      </AnimatedTouchableOpacity>
+      </Animated.View>
     );
   };
 
@@ -437,7 +522,7 @@ export default function SearchScreen() {
               <TouchableOpacity 
                 style={styles.refreshButton}
                 onPress={() => {
-                  debugLogger.log('USER_ACTION', 'Manual refresh triggered');
+                  debugLogger.info('USER_ACTION', 'Manual refresh triggered');
                   searchUsers();
                 }}
               >
@@ -799,5 +884,43 @@ const styles = StyleSheet.create({
   },
   toggleTextDisabled: {
     color: '#666',
+  },
+  actionButtons: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+    width: '100%',
+  },
+  messageButton: {
+    flex: 1,
+    backgroundColor: '#6C5CE7',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    gap: 4,
+  },
+  messageButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  profileButton: {
+    flex: 1,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#6C5CE7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+  },
+  profileButtonText: {
+    color: '#6C5CE7',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

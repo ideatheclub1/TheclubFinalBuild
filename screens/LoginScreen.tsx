@@ -336,7 +336,7 @@ export default function LoginScreen() {
   };
 
   const handleLogin = async () => {
-    debugLogger.log('LOGIN_ATTEMPT', 'User attempting to login', { email: email.trim() });
+    debugLogger.info('LOGIN_ATTEMPT', 'User attempting to login', { email: email.trim() });
     
     if (!validateEmail(email.trim()) || password.length < 6) {
       debugLogger.error('LOGIN_VALIDATION_FAILED', 'Invalid credentials provided');

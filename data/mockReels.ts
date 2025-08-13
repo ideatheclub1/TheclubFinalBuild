@@ -4,6 +4,7 @@ export interface Reel {
   id: string;
   user: User;
   videoUrl: string;
+  thumbnailUrl?: string;
   caption: string;
   hashtags: string[];
   likes: number;

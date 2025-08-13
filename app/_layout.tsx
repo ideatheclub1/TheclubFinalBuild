@@ -5,11 +5,14 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { View, ActivityIndicator, StyleSheet, TouchableOpacity } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { CommentProvider } from '@/contexts/CommentContext';
 import { UserProvider } from '@/contexts/UserContext';
+import { PresenceProvider } from '@/contexts/PresenceContext';
 import DebugAuth from '@/components/DebugAuth';
 import DebugPanel from '@/components/DebugPanel';
+import NavigationDebug from '@/components/NavigationDebug';
 import { Bug } from 'lucide-react-native';
 
 export default function RootLayout() {
@@ -17,9 +20,11 @@ export default function RootLayout() {
   const [showDebugPanel, setShowDebugPanel] = useState(false);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <UserProvider>
-        <CommentProvider>
+    <SafeAreaProvider>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <UserProvider>
+          <PresenceProvider>
+            <CommentProvider>
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="index" />
             <Stack.Screen name="login" />
@@ -41,8 +46,14 @@ export default function RootLayout() {
               }} 
             />
             <Stack.Screen name="host-registration" />
-            <Stack.Screen name="conversation" />
-            <Stack.Screen name="conversations" />
+            <Stack.Screen 
+              name="conversation" 
+              options={{ 
+                headerShown: false,
+                presentation: 'card',
+                gestureEnabled: true 
+              }} 
+            />
             <Stack.Screen name="profile-completion" />
             <Stack.Screen 
               name="edit-profile" 
@@ -78,9 +89,14 @@ export default function RootLayout() {
             visible={showDebugPanel} 
             onClose={() => setShowDebugPanel(false)} 
           />
-        </CommentProvider>
-      </UserProvider>
+          
+          {/* Navigation Debug - Remove this after testing */}
+          <NavigationDebug />
+            </CommentProvider>
+          </PresenceProvider>
+        </UserProvider>
     </GestureHandlerRootView>
+    </SafeAreaProvider>
   );
 }
 

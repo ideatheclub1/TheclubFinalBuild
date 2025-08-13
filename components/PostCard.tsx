@@ -48,7 +48,7 @@ export default function PostCard({ post, onLike, onComment, onShare }: PostCardP
   const cardScale = useSharedValue(1);
 
   // Safe guards for missing data
-  if (!post || !currentUser) {
+  if (!post || !currentUser || !post.user) {
     return null;
   }
   React.useEffect(() => {

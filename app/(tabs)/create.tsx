@@ -42,6 +42,7 @@ export default function CreateScreen() {
   
   const [showCamera, setShowCamera] = useState(false);
   const [cameraMode, setCameraMode] = useState<'photo' | 'video'>('photo');
+  const [createMode, setCreateMode] = useState<'post' | 'reel'>('post');
   const [capturedMedia, setCapturedMedia] = useState<{
     uri: string;
     type: 'image' | 'video';
@@ -73,6 +74,7 @@ export default function CreateScreen() {
     );
     
     setCameraMode('photo');
+    setCreateMode('post'); // Photos default to posts
     setShowCamera(true);
     debug.userAction('Camera opened in photo mode');
   };
@@ -92,6 +94,7 @@ export default function CreateScreen() {
     );
     
     setCameraMode('video');
+    setCreateMode('reel'); // Videos default to reels
     setShowCamera(true);
     debug.userAction('Camera opened in video mode');
   };
@@ -103,7 +106,7 @@ export default function CreateScreen() {
 
   const handleMediaCaptured = (asset: { uri: string; type?: string; name?: string }) => {
     debug.userAction('Media captured', { type: asset.type, name: asset.name });
-    debugLogger.log('MEDIA', 'CAPTURED', `Media captured: ${asset.name}`);
+    debugLogger.info('MEDIA', 'CAPTURED', `Media captured: ${asset.name}`);
     
     setCapturedMedia({
       uri: asset.uri,
@@ -122,38 +125,36 @@ export default function CreateScreen() {
     try {
       setIsUploading(true);
       debug.userAction('Upload and create post', { mediaType: capturedMedia.type });
-      debugLogger.log('POST', 'CREATE_START', `Creating post with ${capturedMedia.type}`);
+      debugLogger.info('POST', 'CREATE_START', `Creating post with ${capturedMedia.type}`);
 
       // Upload media to storage
       const uploadResult = capturedMedia.type === 'video' 
         ? await dataService.storage.uploadVideo(
             { uri: capturedMedia.uri, type: capturedMedia.type === 'video' ? 'video/mp4' : 'image/jpeg', name: capturedMedia.name },
-            'posts',
-            user.id,
-            { folder: capturedMedia.type === 'video' ? 'videos' : 'images' }
+            'reels',
+            user.id
           )
         : await dataService.storage.uploadImage(
             { uri: capturedMedia.uri, type: 'image/jpeg', name: capturedMedia.name },
-            'posts',
-            user.id,
-            { folder: 'images' }
+            'user-media',
+            user.id
           );
 
       if (!uploadResult) {
         throw new Error('Failed to upload media');
       }
 
-      debugLogger.log('UPLOAD', 'SUCCESS', `Media uploaded: ${uploadResult.url}`);
+      debugLogger.info('UPLOAD', 'SUCCESS', `Media uploaded: ${uploadResult.url}`);
 
-      // Create the post or reel based on media type
+      // Create the post or reel based on user's mode selection
       const content = postContent.trim() || `Check out my ${capturedMedia.type}!`;
       
       let post = null;
-      if (capturedMedia.type === 'image') {
-        // Create a post for images
+      if (createMode === 'post') {
+        // Create a post (for images or videos)
         post = await dataService.post.createPost(user.id, content, uploadResult.url);
-      } else if (capturedMedia.type === 'video') {
-        // Create a reel for videos
+      } else if (createMode === 'reel') {
+        // Create a reel (for images or videos)
         post = await dataService.reel.createReel(
           user.id,
           uploadResult.url,
@@ -165,14 +166,14 @@ export default function CreateScreen() {
       }
 
       if (post) {
-        debugLogger.log('POST', 'CREATE_SUCCESS', 'Post created successfully');
+        debugLogger.info('POST', 'CREATE_SUCCESS', 'Post created successfully');
         Alert.alert(
           'Success!', 
           `Your ${capturedMedia.type === 'video' ? 'video' : 'photo'} has been posted!`,
           [
             {
               text: 'View Feed',
-              onPress: () => router.push('/(tabs)/')
+              onPress: () => router.back()
             },
             {
               text: 'Create Another',
@@ -188,7 +189,7 @@ export default function CreateScreen() {
         throw new Error('Failed to create post');
       }
     } catch (error) {
-      debugLogger.error('POST', 'CREATE_ERROR', 'Failed to create post', error);
+      debugLogger.error('POST', 'CREATE_ERROR', error);
       Alert.alert('Error', 'Failed to create post. Please try again.');
     } finally {
       setIsUploading(false);
@@ -249,9 +250,46 @@ export default function CreateScreen() {
         >
           <Text style={styles.title}>Create</Text>
           <Text style={styles.subtitle}>
-            {capturedMedia ? 'Create your post' : 'Share your moment with The Club'}
+            {capturedMedia ? `Create your ${createMode}` : 'Share your moment with The Club'}
           </Text>
         </Animated.View>
+
+        {/* Mode Selector - Only show when no media is captured */}
+        {!capturedMedia && (
+          <Animated.View 
+            style={styles.modeSelectorContainer}
+            entering={FadeIn.delay(200)}
+          >
+            <TouchableOpacity
+              style={[
+                styles.modeButton,
+                createMode === 'post' && styles.modeButtonActive
+              ]}
+              onPress={() => setCreateMode('post')}
+            >
+              <Text style={[
+                styles.modeButtonText,
+                createMode === 'post' && styles.modeButtonTextActive
+              ]}>
+                Post
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.modeButton,
+                createMode === 'reel' && styles.modeButtonActive
+              ]}
+              onPress={() => setCreateMode('reel')}
+            >
+              <Text style={[
+                styles.modeButtonText,
+                createMode === 'reel' && styles.modeButtonTextActive
+              ]}>
+                Reel
+              </Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
 
         {/* Media Preview and Post Creation */}
         {capturedMedia && (
@@ -319,7 +357,7 @@ export default function CreateScreen() {
                   <Upload size={20} color="#FFFFFF" />
                 )}
                 <Text style={styles.createPostButtonText}>
-                  {isUploading ? 'Creating Post...' : 'Create Post'}
+                  {isUploading ? `Creating ${createMode === 'reel' ? 'Reel' : 'Post'}...` : `Create ${createMode === 'reel' ? 'Reel' : 'Post'}`}
                 </Text>
               </LinearGradient>
             </TouchableOpacity>
@@ -346,8 +384,12 @@ export default function CreateScreen() {
                   <Camera size={32} color="#FFFFFF" strokeWidth={2} />
                 </View>
                 <View style={styles.buttonText}>
-                  <Text style={styles.buttonTitle}>Take Photo</Text>
-                  <Text style={styles.buttonSubtitle}>Capture a moment</Text>
+                  <Text style={styles.buttonTitle}>
+                    {createMode === 'reel' ? 'Record Reel' : 'Take Photo'}
+                  </Text>
+                  <Text style={styles.buttonSubtitle}>
+                    {createMode === 'reel' ? 'Create a short video' : 'Capture a moment'}
+                  </Text>
                 </View>
               </View>
             </LinearGradient>
@@ -370,8 +412,12 @@ export default function CreateScreen() {
                   <Video size={32} color="#FFFFFF" strokeWidth={2} />
                 </View>
                 <View style={styles.buttonText}>
-                  <Text style={styles.buttonTitle}>Record Video</Text>
-                  <Text style={styles.buttonSubtitle}>Create a short video</Text>
+                  <Text style={styles.buttonTitle}>
+                    {createMode === 'reel' ? 'Record Reel' : 'Record Video'}
+                  </Text>
+                  <Text style={styles.buttonSubtitle}>
+                    {createMode === 'reel' ? 'Create a trending reel' : 'Create a short video'}
+                  </Text>
                 </View>
               </View>
             </LinearGradient>
@@ -644,5 +690,35 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+  },
+  // Mode Selector Styles
+  modeSelectorContainer: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    padding: 4,
+    marginHorizontal: 24,
+    marginBottom: 30,
+    borderWidth: 1,
+    borderColor: 'rgba(108, 92, 231, 0.3)',
+  },
+  modeButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modeButtonActive: {
+    backgroundColor: 'rgba(108, 92, 231, 0.2)',
+  },
+  modeButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#888888',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+  },
+  modeButtonTextActive: {
+    color: '#6C5CE7',
   },
 });

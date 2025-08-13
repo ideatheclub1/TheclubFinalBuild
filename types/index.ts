@@ -98,6 +98,10 @@ export interface Reel {
   likesCount?: number;
   commentsCount?: number;
   sharesCount?: number;
+  viewCount?: number;
+  thumbnailUrl?: string;
+  isTrending?: boolean;
+  location?: string;
   musicTitle?: string;
   musicArtist?: string;
   musicCoverUrl?: string;

@@ -125,6 +125,11 @@ class DebugLogger {
 // Create singleton instance
 export const debugLogger = new DebugLogger();
 
+// Test console output on initialization
+console.log('🚀 DEBUG LOGGER INITIALIZED - If you see this, console.log is working!');
+console.log('📍 Debug logger enabled:', debugLogger['isEnabled']);
+console.log('📊 Current time:', new Date().toLocaleTimeString());
+
 // Convenience functions for common operations
 export const debug = {
   // Page navigation
@@ -206,6 +211,19 @@ export const debug = {
   authError: (action: string, error: any) => {
     debugLogger.error('AUTH', action, `Authentication error: ${action}`, error);
   },
+
+  // Test function - call this to verify debug logger is working
+  test: () => {
+    console.log('🧪 DIRECT CONSOLE.LOG TEST - You should see this immediately!');
+    debugLogger.info('TEST', 'MANUAL', 'Testing debug logger - INFO level');
+    debugLogger.warn('TEST', 'MANUAL', 'Testing debug logger - WARN level');
+    debugLogger.error('TEST', 'MANUAL', 'Testing debug logger - ERROR level');
+    debugLogger.success('TEST', 'MANUAL', 'Testing debug logger - SUCCESS level');
+    debugLogger.process('TEST', 'MANUAL', 'Testing debug logger - PROCESS level');
+    console.log('🎯 If you see colored logs above, debug logger is working!');
+    console.log('📋 Total logs stored:', debugLogger.getLogs().length);
+    return 'Debug test completed - check console output above';
+  },
 };
 
 // React Hook for debugging component lifecycle
@@ -217,9 +235,13 @@ export const useDebugLogger = (componentName: string) => {
     };
   }, [componentName]);
 
+  // Return an object that has the same interface as debugLogger but scoped to component
   return {
-    log: (action: string, message: string, data?: any) => {
+    info: (action: string, message: string, data?: any) => {
       debugLogger.info(componentName, action, message, data);
+    },
+    warn: (action: string, message: string, data?: any) => {
+      debugLogger.warn(componentName, action, message, data);
     },
     error: (action: string, message: string, data?: any) => {
       debugLogger.error(componentName, action, message, data);
@@ -230,5 +252,12 @@ export const useDebugLogger = (componentName: string) => {
     process: (action: string, message: string, data?: any) => {
       debugLogger.process(componentName, action, message, data);
     },
+    // Legacy aliases for backwards compatibility
+    log: (action: string, message: string, data?: any) => {
+      debugLogger.info(componentName, action, message, data);
+    },
   };
-}; 
+};
+
+// Add default export to fix import issues
+export default debugLogger; 

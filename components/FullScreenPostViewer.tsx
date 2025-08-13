@@ -175,7 +175,7 @@ export default function FullScreenPostViewer({
     }
   }, []);
 
-  if (!visible || !currentPost) return null;
+  if (!visible || !currentPost || !currentPost.user) return null;
 
   const commentCount = getCommentCount(currentPost.id);
 
@@ -197,10 +197,10 @@ export default function FullScreenPostViewer({
             <View style={styles.header}>
               <TouchableOpacity 
                 style={styles.userInfo}
-                onPress={() => handleUserPress(currentPost.user.id)}
+                onPress={() => currentPost.user?.id && handleUserPress(currentPost.user.id)}
               >
-                <Image source={{ uri: currentPost.user.avatar }} style={styles.avatar} />
-                <Text style={styles.username}>{currentPost.user.username}</Text>
+                <Image source={{ uri: currentPost.user?.avatar || 'https://via.placeholder.com/150' }} style={styles.avatar} />
+                <Text style={styles.username}>{currentPost.user?.username || 'Unknown User'}</Text>
               </TouchableOpacity>
               
               <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
@@ -211,9 +211,9 @@ export default function FullScreenPostViewer({
             {/* Post Content */}
             <FlatList
               ref={flatListRef}
-              data={posts}
+              data={posts.filter(item => item && item.id)}
               renderItem={renderPost}
-              keyExtractor={(item) => item.id}
+              keyExtractor={(item) => item?.id || `post-${Math.random()}`}
               horizontal
               pagingEnabled
               showsHorizontalScrollIndicator={false}
