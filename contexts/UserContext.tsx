@@ -5,6 +5,7 @@ import { User as SupabaseUser } from '@supabase/supabase-js';
 import { User } from '../types';
 import { router } from 'expo-router';
 import { dataService } from '@/services/dataService';
+import { notificationService } from '@/services/notificationService';
 
 const USER_STORAGE_KEY = '@user_data';
 
@@ -105,6 +106,14 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           if (userProfile) {
             await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(userProfile));
             dispatch({ type: 'SET_USER', payload: userProfile });
+            
+            // Initialize notifications for the user
+            try {
+              await notificationService.initialize(userProfile.id);
+              console.log('🔔 Notifications initialized for user');
+            } catch (notificationError) {
+              console.error('❌ Failed to initialize notifications:', notificationError);
+            }
           }
         }
       }
@@ -115,11 +124,16 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   // Check authentication status and redirect if needed
   useEffect(() => {
-    if (!state.isLoading && !state.isAuthenticated) {
-      // Redirect to login page if user is not authenticated
-      router.replace('/login');
+    if (!state.isLoading && !state.isAuthenticated && state.user === null) {
+      // Only redirect if we're sure there's no user and we're not loading
+      // Add a small delay to prevent immediate redirects during state transitions
+      const timer = setTimeout(() => {
+        router.replace('/login');
+      }, 100);
+      
+      return () => clearTimeout(timer);
     }
-  }, [state.isAuthenticated, state.isLoading]);
+  }, [state.isAuthenticated, state.isLoading, state.user]);
 
   // Fetch user profile from Supabase after login
   const fetchUserProfile = async (userId: string): Promise<User | null> => {

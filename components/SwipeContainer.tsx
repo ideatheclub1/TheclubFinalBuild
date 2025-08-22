@@ -20,7 +20,7 @@ import Animated, {
 import { PanGestureHandler, PanGestureHandlerGestureEvent } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
 import CameraScreen from './CameraScreen';
-import MessagesScreen from './MessagesPanel';
+import MessagesPanel from './MessagesPanel';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.25;
@@ -142,7 +142,10 @@ export default function SwipeContainer({ children, disableGestures = false }: Sw
         runOnJS(triggerHaptic)();
       } else if (translationX < -SWIPE_THRESHOLD || velocityX < -500) {
         // Swipe left to messages
-        runOnJS(setCurrentView)('messages');
+        runOnJS(() => {
+          console.log('📱 SwipeContainer - Switching to messages view');
+          setCurrentView('messages');
+        })();
         runOnJS(snapToView)('messages');
         runOnJS(triggerHaptic)();
       } else {
@@ -154,6 +157,7 @@ export default function SwipeContainer({ children, disableGestures = false }: Sw
   });
 
   const handleCloseMessages = () => {
+    console.log('📱 SwipeContainer - Closing messages panel');
     setCurrentView('home');
     snapToView('home');
   };
@@ -228,7 +232,7 @@ export default function SwipeContainer({ children, disableGestures = false }: Sw
       )}
       
       {/* Camera Screen (Left Swipe) - Pre-mounted */}
-      {cameraMounted && (
+      {!disableGestures && cameraMounted && (
         <Animated.View style={[styles.cameraContainer, cameraStyle]}>
           <CameraScreen 
             isVisible={currentView === 'camera'} 
@@ -238,14 +242,22 @@ export default function SwipeContainer({ children, disableGestures = false }: Sw
       )}
       
       {/* Messages Panel (Right Swipe) - Pre-mounted */}
-      {messagesMounted && (
-        <Animated.View style={[styles.messagesContainer, messagesStyle]}>
-          <MessagesScreen 
-            isVisible={currentView === 'messages'} 
-            onClose={handleCloseMessages}
-          />
-        </Animated.View>
-      )}
+      {(() => {
+        console.log('📱 SwipeContainer - Messages render check:', {
+          messagesMounted,
+          currentView,
+          isMessagesVisible: currentView === 'messages',
+          disableGestures
+        });
+        return !disableGestures && messagesMounted && (
+          <Animated.View style={[styles.messagesContainer, messagesStyle]}>
+            <MessagesPanel 
+              isVisible={currentView === 'messages'} 
+              onClose={handleCloseMessages}
+            />
+          </Animated.View>
+        );
+      })()}
     </SafeAreaView>
   );
 }

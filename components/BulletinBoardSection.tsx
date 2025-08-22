@@ -15,20 +15,18 @@ import Animated, {
   useAnimatedStyle,
   withSpring,
 } from 'react-native-reanimated';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Plus, FileText, Calendar } from 'lucide-react-native';
 import ImageViewerModal from './ImageViewerModal';
 import AddNoteModal from './AddNoteModal';
+import { dataService } from '@/services/dataService';
+import { useUser } from '@/contexts/UserContext';
+import { BulletinNote } from '@/types';
 
-interface Note {
-  id: string;
-  title: string;
-  smallImage: string;
-  fullImage: string;
-  createdAt: string;
-  type: 'sticky' | 'currency';
-  amount?: number;
-}
+// Use the BulletinNote type from types instead
+type Note = BulletinNote & {
+  smallImage?: string; // For backwards compatibility
+  fullImage?: string;  // For backwards compatibility
+};
 
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
@@ -83,40 +81,11 @@ const ModernNoteCard: React.FC<ModernNoteCardProps> = ({ note, onImagePress, ind
 
 interface BulletinBoardSectionProps {
   isCurrentUser: boolean;
+  userId?: string; // User ID to load notes for (current user if not provided)
 }
 
-const STORAGE_KEY = '@bulletin_board_notes';
-
-// Mock notes for initial data
-const mockNotes: Note[] = [
-  {
-    id: '1',
-    title: 'Creative breakthrough moment achieved',
-    smallImage: 'https://images.pexels.com/photos/1181244/pexels-photo-1181244.jpeg?auto=compress&cs=tinysrgb&w=400',
-    fullImage: 'https://images.pexels.com/photos/1181244/pexels-photo-1181244.jpeg?auto=compress&cs=tinysrgb&w=800',
-    createdAt: 'Jan 15, 2024',
-    type: 'sticky',
-  },
-  {
-    id: '2',
-    title: 'First major project milestone',
-    smallImage: 'https://images.pexels.com/photos/1181677/pexels-photo-1181677.jpeg?auto=compress&cs=tinysrgb&w=400',
-    fullImage: 'https://images.pexels.com/photos/1181677/pexels-photo-1181677.jpeg?auto=compress&cs=tinysrgb&w=800',
-    createdAt: 'Feb 2, 2024',
-    type: 'currency',
-    amount: 500,
-  },
-  {
-    id: '3',
-    title: 'Professional certification earned',
-    smallImage: 'https://images.pexels.com/photos/1181519/pexels-photo-1181519.jpeg?auto=compress&cs=tinysrgb&w=400',
-    fullImage: 'https://images.pexels.com/photos/1181519/pexels-photo-1181519.jpeg?auto=compress&cs=tinysrgb&w=800',
-    createdAt: 'Mar 10, 2024',
-    type: 'sticky',
-  },
-];
-
-export default function BulletinBoardSection({ isCurrentUser }: BulletinBoardSectionProps) {
+export default function BulletinBoardSection({ isCurrentUser, userId }: BulletinBoardSectionProps) {
+  const { user: currentUser } = useUser();
   const [fontsLoaded] = useFonts({
     Inter_400Regular,
     Inter_500Medium,
@@ -130,33 +99,42 @@ export default function BulletinBoardSection({ isCurrentUser }: BulletinBoardSec
   const [showAddModal, setShowAddModal] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // Use provided userId or current user's ID
+  const targetUserId = userId || currentUser?.id;
+
   useEffect(() => {
-    loadNotes();
-  }, []);
+    if (targetUserId) {
+      loadNotes();
+    }
+  }, [targetUserId]);
 
   const loadNotes = async () => {
+    if (!targetUserId) return;
+    
     try {
-      const stored = await AsyncStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        setNotes(JSON.parse(stored));
-      } else {
-        // Initialize with mock data
-        setNotes(mockNotes);
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(mockNotes));
-      }
+      setLoading(true);
+      const bulletinNotes = await dataService.bulletin.getBulletinNotes(targetUserId);
+      
+      // Convert to local Note format for compatibility
+      const convertedNotes: Note[] = bulletinNotes.map(note => ({
+        ...note,
+        // Map new fields to old format for backwards compatibility
+        smallImage: note.thumbnailUrl || note.imageUrl,
+        fullImage: note.imageUrl,
+        type: note.noteType,
+        createdAt: note.createdAt ? new Date(note.createdAt).toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }) : 'Unknown date',
+      }));
+      
+      setNotes(convertedNotes);
     } catch (error) {
-      console.error('Failed to load notes:', error);
-      setNotes(mockNotes);
+      console.error('Failed to load bulletin notes:', error);
+      setNotes([]);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const saveNotes = async (newNotes: Note[]) => {
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newNotes));
-    } catch (error) {
-      console.error('Failed to save notes:', error);
     }
   };
 
@@ -165,34 +143,57 @@ export default function BulletinBoardSection({ isCurrentUser }: BulletinBoardSec
     setShowImageViewer(true);
   };
 
-  const handleAddNote = async (newNote: Omit<Note, 'id' | 'createdAt'>) => {
-    const stickyNotes = notes.filter(n => n.type === 'sticky');
-    const currencyNotes = notes.filter(n => n.type === 'currency');
-    
-    if (newNote.type === 'sticky' && stickyNotes.length >= 7) {
-      Alert.alert('Limit Reached', 'You can only have up to 7 sticky notes.');
-      return;
-    }
-    
-    if (newNote.type === 'currency' && currencyNotes.length >= 1) {
-      Alert.alert('Limit Reached', 'You can only have 1 currency note.');
+  const handleAddNote = async (newNote: {
+    title: string;
+    description?: string;
+    smallImage: string;
+    fullImage: string;
+    type: 'sticky' | 'currency';
+    amount?: number;
+  }) => {
+    if (!currentUser?.id) {
+      Alert.alert('Error', 'You must be logged in to add notes.');
       return;
     }
 
-    const note: Note = {
-      ...newNote,
-      id: Date.now().toString(),
-      createdAt: new Date().toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      }),
-    };
+    try {
+      // Check current note counts using backend
+      const stickyCount = await dataService.bulletin.getBulletinNoteCountByType(currentUser.id, 'sticky');
+      const currencyCount = await dataService.bulletin.getBulletinNoteCountByType(currentUser.id, 'currency');
+      
+      if (newNote.type === 'sticky' && stickyCount >= 7) {
+        Alert.alert('Limit Reached', 'You can only have up to 7 sticky notes.');
+        return;
+      }
+      
+      if (newNote.type === 'currency' && currencyCount >= 1) {
+        Alert.alert('Limit Reached', 'You can only have 1 currency note.');
+        return;
+      }
 
-    const updatedNotes = [note, ...notes];
-    setNotes(updatedNotes);
-    await saveNotes(updatedNotes);
-    setShowAddModal(false);
+      // Create note in backend
+      const createdNote = await dataService.bulletin.createBulletinNote(
+        currentUser.id,
+        newNote.title,
+        newNote.description || '',
+        newNote.fullImage,
+        newNote.smallImage,
+        newNote.type,
+        newNote.amount
+      );
+
+      if (createdNote) {
+        // Reload notes to get fresh data
+        await loadNotes();
+        setShowAddModal(false);
+        Alert.alert('Success', 'Note added successfully!');
+      } else {
+        Alert.alert('Error', 'Failed to create note. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error adding note:', error);
+      Alert.alert('Error', 'Failed to add note. Please try again.');
+    }
   };
 
   const renderNote = ({ item, index }: { item: Note; index: number }) => (

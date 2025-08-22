@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import {
   View,
   Text,
-  Image,
   TouchableOpacity,
   StyleSheet,
   Dimensions,
@@ -18,9 +17,11 @@ import Animated, {
   interpolate,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { Heart, MessageCircle, Share2, TrendingUp } from 'lucide-react-native';
+import { Heart, MessageCircle, Share2, TrendingUp, Send } from 'lucide-react-native';
 import { Post } from '../types';
 import { useComments } from '../contexts/CommentContext';
+import ShareToUserModal from './ShareToUserModal';
+import CachedImage from './CachedImage';
 import { useUser } from '@/contexts/UserContext';
 
 interface PostCardProps {
@@ -38,6 +39,7 @@ export default function PostCard({ post, onLike, onComment, onShare }: PostCardP
   const { user: currentUser } = useUser();
   const [isLiked, setIsLiked] = useState(post.isLiked);
   const [likes, setLikes] = useState(post.likes);
+  const [showShareModal, setShowShareModal] = useState(false);
   const { getCommentCount } = useComments();
   
   const likeScale = useSharedValue(1);
@@ -48,7 +50,7 @@ export default function PostCard({ post, onLike, onComment, onShare }: PostCardP
   const cardScale = useSharedValue(1);
 
   // Safe guards for missing data
-  if (!post || !currentUser) {
+  if (!post || !currentUser || !post.user) {
     return null;
   }
   React.useEffect(() => {
@@ -58,6 +60,12 @@ export default function PostCard({ post, onLike, onComment, onShare }: PostCardP
       });
     }
   }, [post.isTrending]);
+
+  // Sync local state with post prop when it changes
+  React.useEffect(() => {
+    setIsLiked(post.isLiked);
+    setLikes(post.likes);
+  }, [post.isLiked, post.likes]);
 
   const handleLike = () => {
     try {
@@ -110,6 +118,13 @@ export default function PostCard({ post, onLike, onComment, onShare }: PostCardP
       withSpring(1, { damping: 8, stiffness: 200 })
     );
     onShare?.(post.id);
+  };
+
+  const handleDMShare = () => {
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    setShowShareModal(true);
   };
 
   const handleUserPress = () => {
@@ -180,7 +195,12 @@ export default function PostCard({ post, onLike, onComment, onShare }: PostCardP
       <TouchableOpacity activeOpacity={0.95} onPress={handleImagePress}>
         <View style={styles.mediaContainer}>
           {post.image && (
-            <Image source={{ uri: post.image }} style={styles.postImage} />
+            <CachedImage 
+              source={{ uri: post.image }} 
+              style={styles.postImage}
+              cacheType="image"
+              showLoader={true}
+            />
           )}
           
           {/* Trending Badge */}
@@ -207,11 +227,13 @@ export default function PostCard({ post, onLike, onComment, onShare }: PostCardP
           {/* User Info - Bottom Left */}
           <View style={styles.userSection}>
             <TouchableOpacity style={styles.userInfo} onPress={handleUserPress}>
-              <Image 
+              <CachedImage 
                 source={{ 
                   uri: post?.user?.avatar || 'https://images.pexels.com/photos/774909/pexels-photo-774909.jpeg?auto=compress&cs=tinysrgb&w=150'
                 }} 
-                style={styles.avatar} 
+                style={styles.avatar}
+                cacheType="thumbnail"
+                showLoader={false}
               />
               <View style={styles.userDetails}>
                 <Text style={styles.username}>@{post?.user?.username ?? 'Guest'}</Text>
@@ -260,6 +282,16 @@ export default function PostCard({ post, onLike, onComment, onShare }: PostCardP
                   </View>
                 </TouchableOpacity>
               </Animated.View>
+
+              {/* DM Share Button */}
+              <TouchableOpacity
+                style={styles.actionButton}
+                onPress={handleDMShare}
+              >
+                <View style={styles.actionIconContainer}>
+                  <Send size={24} color="#FFFFFF" strokeWidth={2} />
+                </View>
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -286,6 +318,16 @@ export default function PostCard({ post, onLike, onComment, onShare }: PostCardP
           </TouchableOpacity>
         </LinearGradient>
       </View>
+      
+      <ShareToUserModal
+        visible={showShareModal}
+        onClose={() => setShowShareModal(false)}
+        contentType="post"
+        content={post}
+        onShareComplete={() => {
+          setShowShareModal(false);
+        }}
+      />
     </Animated.View>
   );
 }

@@ -5,6 +5,11 @@ import { useUser } from '@/contexts/UserContext';
 
 export default function Index() {
   const { isAuthenticated, isLoading } = useUser();
+  
+  // Debug: Track app index mounting
+  useEffect(() => {
+    console.log('🔍 DEBUG: App index mounted, isAuthenticated:', isAuthenticated, 'isLoading:', isLoading);
+  }, [isAuthenticated, isLoading]);
 
   // Show loading while determining auth state
   if (isLoading) {

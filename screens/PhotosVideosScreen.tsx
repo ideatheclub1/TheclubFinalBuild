@@ -112,7 +112,7 @@ export default function PhotosVideosScreen() {
     try {
       setIsLoading(true);
       debug.userAction('loadMedia', { filter, userId: user.id });
-      debugLogger.log('LOAD_START', `Loading media for user: ${user.id}, filter: ${filter}`);
+      debugLogger.info('LOAD_START', `Loading media for user: ${user.id}, filter: ${filter}`);
       
       const media = await dataService.storage.getUserMedia(
         user.id,
@@ -120,7 +120,7 @@ export default function PhotosVideosScreen() {
       );
       
       setMediaItems(media.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-      debugLogger.log('LOAD_SUCCESS', `Loaded ${media.length} media items for user: ${user.id}`);
+      debugLogger.info('LOAD_SUCCESS', `Loaded ${media.length} media items for user: ${user.id}`);
     } catch (error) {
       debugLogger.error('LOAD_ERROR', 'Failed to load media', error);
       Alert.alert('Error', 'Failed to load your media. Please try again.');
@@ -158,7 +158,7 @@ export default function PhotosVideosScreen() {
       });
 
       debug.userAction('openGallery', { filter });
-      debugLogger.log('GALLERY_OPEN', `Opening gallery with filter: ${filter}`);
+      debugLogger.info('GALLERY_OPEN', `Opening gallery with filter: ${filter}`);
 
       const mediaType = filter === 'videos' 
         ? ImagePicker.MediaTypeOptions.Videos 
@@ -168,18 +168,31 @@ export default function PhotosVideosScreen() {
 
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: mediaType,
-        allowsEditing: true,
-        quality: 0.8,
+        allowsEditing: false, // Disable cropping for full images
+        quality: 1.0, // Maximum quality
         allowsMultipleSelection: false,
+        exif: true, // Include EXIF data
+        base64: false, // Don't include base64 to save memory
       });
 
       if (result.canceled || !result.assets?.[0] || !user?.id) {
-        debugLogger.log('GALLERY_CANCELLED', 'User cancelled gallery selection');
+        debugLogger.info('GALLERY_CANCELLED', 'User cancelled gallery selection');
         return;
       }
 
       const asset = result.assets[0];
-      debugLogger.log('GALLERY_SELECTED', `Selected asset: ${asset.uri}, type: ${asset.type}`);
+      
+      // Log gallery selection details for debugging
+      console.log('🖼️ PhotosVideos gallery selection:', {
+        uri: asset.uri,
+        width: asset.width,
+        height: asset.height,
+        type: asset.type,
+        fileSize: asset.fileSize,
+        orientation: asset.orientation
+      });
+
+      debugLogger.info('GALLERY_SELECTED', `Selected asset: ${asset.uri}, type: ${asset.type}`);
       await uploadMedia(asset);
     } catch (error) {
       debugLogger.error('GALLERY_ERROR', 'Failed to upload from gallery', error);
@@ -192,7 +205,7 @@ export default function PhotosVideosScreen() {
     setShowCameraModal(true);
     triggerHaptic('light');
     debug.userAction('openCamera', { mode });
-    debugLogger.log('CAMERA_OPEN', `Opening camera in ${mode} mode`);
+    debugLogger.info('CAMERA_OPEN', `Opening camera in ${mode} mode`);
   };
 
   const uploadMedia = async (asset: ImagePicker.ImagePickerAsset) => {
@@ -204,7 +217,7 @@ export default function PhotosVideosScreen() {
         type: asset.type, 
         fileSize: asset.fileSize 
       });
-      debugLogger.log('UPLOAD_START', `Starting upload - type: ${asset.type}, size: ${asset.fileSize}`);
+      debugLogger.info('UPLOAD_START', `Starting upload - type: ${asset.type}, size: ${asset.fileSize}`);
 
       const file = {
         uri: asset.uri,
@@ -241,7 +254,7 @@ export default function PhotosVideosScreen() {
     setShowItemModal(true);
     triggerHaptic('light');
     debug.userAction('viewItem', { itemId: item.id, itemType: item.type });
-    debugLogger.log('MEDIA_VIEW', `Viewing media item: ${item.name}`);
+    debugLogger.info('MEDIA_VIEW', `Viewing media item: ${item.name}`);
   };
 
   const handleDeleteItem = async (item: MediaItem) => {
@@ -258,7 +271,7 @@ export default function PhotosVideosScreen() {
           onPress: async () => {
             try {
               debug.userAction('deleteMedia', { itemId: item.id });
-              debugLogger.log('DELETE_START', `Deleting media: ${item.name}`);
+              debugLogger.info('DELETE_START', `Deleting media: ${item.name}`);
               
               const success = await dataService.storage.deleteFile(item.bucket, item.path);
               
@@ -288,7 +301,7 @@ export default function PhotosVideosScreen() {
     });
     triggerHaptic('light');
     debug.userAction('changeFilter', { oldFilter: filter, newFilter });
-    debugLogger.log('FILTER_CHANGE', `Filter changed from ${filter} to ${newFilter}`);
+    debugLogger.info('FILTER_CHANGE', `Filter changed from ${filter} to ${newFilter}`);
   };
 
   const handleMediaCaptured = (asset: { uri: string; type?: string; name?: string }) => {

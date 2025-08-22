@@ -47,10 +47,10 @@ export default function StoryCard({ story, onPress }: StoryCardProps) {
           style={styles.border}
         >
           <View style={styles.imageContainer}>
-            <Image source={{ uri: story.user.avatar }} style={styles.avatar} />
+            <Image source={{ uri: story.user?.avatar || 'https://via.placeholder.com/150' }} style={styles.avatar} />
           </View>
         </LinearGradient>
-        <Text style={styles.username}>{story.user.username}</Text>
+        <Text style={styles.username}>{story.user?.username || 'Unknown User'}</Text>
         <Text style={styles.expiresAt}>{story.expiresAt}</Text>
       </Animated.View>
     </TouchableOpacity>

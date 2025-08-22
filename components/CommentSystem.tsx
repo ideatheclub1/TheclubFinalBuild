@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+import CachedImage from './CachedImage';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -118,7 +119,11 @@ const CommentItem: React.FC<{
   return (
     <View style={[styles.commentItem, isReply && styles.replyItem]}>
               <TouchableOpacity onPress={handleUserPress}>
-          <Image source={{ uri: comment.user?.avatar || 'https://images.pexels.com/photos/774909/pexels-photo-774909.jpeg?auto=compress&cs=tinysrgb&w=150' }} style={styles.commentAvatar} />
+          <CachedImage 
+            source={{ uri: comment.user?.avatar || 'https://images.pexels.com/photos/774909/pexels-photo-774909.jpeg?auto=compress&cs=tinysrgb&w=150' }} 
+            style={styles.commentAvatar} 
+            cacheType="thumbnail"
+          />
         </TouchableOpacity>
       
       <View style={styles.commentContent}>
@@ -225,7 +230,7 @@ export default function CommentSystem({ visible, onClose, postId, postType }: Co
     try {
       setLoading(true);
       console.log('Loading comments for post:', postId);
-      const fetchedComments = await dataService.comment.getComments(postId);
+      const fetchedComments = await dataService.comment.getComments(postId, postType);
       console.log('Fetched comments:', fetchedComments);
       setComments(fetchedComments);
       
@@ -297,7 +302,7 @@ export default function CommentSystem({ visible, onClose, postId, postType }: Co
       try {
         setSendingComment(true);
         console.log('Adding comment:', { postId, content: newComment.trim(), parentId: replyTo?.id });
-        const newCommentData = await dataService.comment.addComment(postId, newComment.trim(), replyTo?.id);
+        const newCommentData = await dataService.comment.addComment(postId, newComment.trim(), replyTo?.id, postType);
         console.log('New comment data:', newCommentData);
         
         if (newCommentData) {

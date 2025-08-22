@@ -2,6 +2,7 @@ import React, { createContext, useContext, useReducer, useEffect, ReactNode } fr
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Comment, CommentState, CommentContextType } from '../types/comments';
 import { mockUsers } from '../data/mockData';
+import { dataService } from '../services/dataService';
 
 const STORAGE_KEY = '@comments_storage';
 
@@ -215,9 +216,13 @@ export const CommentProvider: React.FC<{ children: ReactNode }> = ({ children })
     loadComments();
   }, []);
 
-  // Save comments to storage whenever they change
+  // Save comments to storage whenever they change (with debouncing to prevent loops)
   useEffect(() => {
-    saveComments();
+    const timeoutId = setTimeout(() => {
+      saveComments();
+    }, 500); // Debounce saves by 500ms
+    
+    return () => clearTimeout(timeoutId);
   }, [state.comments]);
 
   const loadComments = async () => {
@@ -276,34 +281,17 @@ export const CommentProvider: React.FC<{ children: ReactNode }> = ({ children })
 
   const addComment = async (postId: string, postType: 'feed' | 'reel', content: string, parentId?: string) => {
     try {
-      // Randomly select a mock user for variety
-      const randomUserIndex = Math.floor(Math.random() * mockUsers.length);
-      const currentUser = mockUsers[randomUserIndex];
-      if (!currentUser || !content?.trim()) {
+      if (!content?.trim()) {
         return;
       }
 
-      const newComment: Comment = {
-        id: `c${Date.now()}`,
-        postId,
-        postType,
-        userId: currentUser.id,
-        user: {
-          id: currentUser.id,
-          username: currentUser.username,
-          avatar: currentUser.avatar
-        },
-        content: content.trim(),
-        likes: 0,
-        isLiked: false,
-        timestamp: 'now',
-        parentId
-      };
-
-      dispatch({ type: 'ADD_COMMENT', payload: { postId, comment: newComment } });
+      // Use the real data service to add comment
+      const newComment = await dataService.comment.addComment(postId, content.trim(), parentId, postType);
       
-      // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, 100));
+      if (newComment) {
+        dispatch({ type: 'ADD_COMMENT', payload: { postId, comment: newComment } });
+        // Note: Comments are automatically saved via useEffect
+      }
     } catch (error) {
       console.error('Error adding comment:', error);
       dispatch({ type: 'SET_ERROR', payload: 'Failed to add comment' });

@@ -24,6 +24,8 @@ import Animated, {
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { X, Camera, Upload, FileText, DollarSign } from 'lucide-react-native';
+import { dataService } from '@/services/dataService';
+import { useUser } from '@/contexts/UserContext';
 
 const { width, height } = Dimensions.get('window');
 
@@ -44,16 +46,19 @@ interface AddNoteModalProps {
 }
 
 export default function AddNoteModal({ visible, onClose, onAdd }: AddNoteModalProps) {
+  const { user: currentUser } = useUser();
   const [fontsLoaded] = useFonts({
     PatrickHand_400Regular,
   });
 
   const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [smallImage, setSmallImage] = useState('');
   const [fullImage, setFullImage] = useState('');
   const [noteType, setNoteType] = useState<'sticky' | 'currency'>('sticky');
   const [amount, setAmount] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUploadingImages, setIsUploadingImages] = useState(false);
 
   const scale = useSharedValue(0);
   const opacity = useSharedValue(0);
@@ -91,11 +96,13 @@ export default function AddNoteModal({ visible, onClose, onAdd }: AddNoteModalPr
 
   const resetForm = () => {
     setTitle('');
+    setDescription('');
     setSmallImage('');
     setFullImage('');
     setNoteType('sticky');
     setAmount('');
     setIsSubmitting(false);
+    setIsUploadingImages(false);
   };
 
   const pickImage = async (type: 'small' | 'full') => {
@@ -117,6 +124,11 @@ export default function AddNoteModal({ visible, onClose, onAdd }: AddNoteModalPr
   };
 
   const handleSubmit = async () => {
+    if (!currentUser?.id) {
+      Alert.alert('Error', 'You must be logged in to add notes');
+      return;
+    }
+
     if (!title.trim()) {
       Alert.alert('Error', 'Please enter a title for your note');
       return;
@@ -133,25 +145,63 @@ export default function AddNoteModal({ visible, onClose, onAdd }: AddNoteModalPr
     }
 
     setIsSubmitting(true);
+    setIsUploadingImages(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Upload thumbnail image
+      console.log('🖼️ Uploading thumbnail image...');
+      const thumbnailUpload = await dataService.storage.uploadImage(
+        {
+          uri: smallImage,
+          name: `bulletin_thumbnail_${Date.now()}.jpg`,
+          type: 'image/jpeg'
+        },
+        'user-media', // Temporary: use existing bucket
+        currentUser.id,
+        { quality: 0.7 }
+      );
 
+      if (!thumbnailUpload) {
+        throw new Error('Failed to upload thumbnail image');
+      }
+
+      // Upload full image
+      console.log('🖼️ Uploading full image...');
+      const fullImageUpload = await dataService.storage.uploadImage(
+        {
+          uri: fullImage,
+          name: `bulletin_full_${Date.now()}.jpg`,
+          type: 'image/jpeg'
+        },
+        'user-media', // Temporary: use existing bucket
+        currentUser.id,
+        { quality: 0.9 }
+      );
+
+      if (!fullImageUpload) {
+        throw new Error('Failed to upload full image');
+      }
+
+      setIsUploadingImages(false);
+
+      // Create the note with uploaded image URLs
+      console.log('📝 Creating bulletin note...');
       onAdd({
         title: title.trim(),
-        smallImage,
-        fullImage,
+        description: description.trim(),
+        smallImage: thumbnailUpload.url,
+        fullImage: fullImageUpload.url,
         type: noteType,
         amount: noteType === 'currency' ? parseInt(amount) : undefined,
       });
 
       handleClose();
-      Alert.alert('Success', 'Note added successfully!');
     } catch (error) {
+      console.error('Error creating note:', error);
       Alert.alert('Error', 'Failed to add note. Please try again.');
-    } finally {
       setIsSubmitting(false);
+      setIsUploadingImages(false);
     }
   };
 
@@ -229,10 +279,10 @@ export default function AddNoteModal({ visible, onClose, onAdd }: AddNoteModalPr
                 {/* Title Input */}
                 <View style={styles.inputSection}>
                   <Text style={[styles.label, { fontFamily: 'Inter-Medium' }]}>
-                    {noteType === 'currency' ? 'Achievement Description' : 'Note Title'}
+                    {noteType === 'currency' ? 'Achievement Title' : 'Note Title'}
                   </Text>
                   <TextInput
-                    style={[styles.textInput, { fontFamily: 'Inter-Regular' }]}
+                    style={[styles.textInput, { fontFamily: 'Inter-Regular', minHeight: 50 }]}
                     placeholder="Enter your note title..."
                     placeholderTextColor="#9CA3AF"
                     value={title}
@@ -242,6 +292,25 @@ export default function AddNoteModal({ visible, onClose, onAdd }: AddNoteModalPr
                   />
                   <Text style={[styles.charCount, { fontFamily: 'Inter-Regular' }]}>
                     {title.length}/100
+                  </Text>
+                </View>
+
+                {/* Description Input */}
+                <View style={styles.inputSection}>
+                  <Text style={[styles.label, { fontFamily: 'Inter-Medium' }]}>
+                    Description (Optional)
+                  </Text>
+                  <TextInput
+                    style={[styles.textInput, { fontFamily: 'Inter-Regular', minHeight: 80 }]}
+                    placeholder="Add more details about your note..."
+                    placeholderTextColor="#9CA3AF"
+                    value={description}
+                    onChangeText={setDescription}
+                    maxLength={200}
+                    multiline
+                  />
+                  <Text style={[styles.charCount, { fontFamily: 'Inter-Regular' }]}>
+                    {description.length}/200
                   </Text>
                 </View>
 
@@ -317,7 +386,8 @@ export default function AddNoteModal({ visible, onClose, onAdd }: AddNoteModalPr
                     style={styles.submitGradient}
                   >
                     <Text style={[styles.submitText, { fontFamily: 'Inter-SemiBold' }]}>
-                      {isSubmitting ? 'Adding Note...' : 'Add Note'}
+                      {isUploadingImages ? 'Uploading Images...' : 
+                       isSubmitting ? 'Creating Note...' : 'Add Note'}
                     </Text>
                   </LinearGradient>
                 </TouchableOpacity>

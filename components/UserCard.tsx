@@ -28,6 +28,7 @@ export default function UserCard({ user, onFollow, onPress }: UserCardProps) {
   }
 
   const handleFollow = () => {
+    if (!user?.id) return;
     setIsFollowing(!isFollowing);
     onFollow(user.id);
   };

@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Dimensions,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -23,8 +24,10 @@ import Animated, {
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { X, MessageCircle, Search, LocationEdit as Edit, MoveHorizontal as MoreHorizontal } from 'lucide-react-native';
-import { mockConversations, mockUsers } from '../data/mockData';
 import { Conversation, User } from '../types';
+import { useUser } from '@/contexts/UserContext';
+import { dataService } from '@/services/dataService';
+import { useDebugLogger } from '@/utils/debugLogger';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -36,18 +39,73 @@ interface MessagesPanelProps {
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
 export default function MessagesPanel({ isVisible, onClose }: MessagesPanelProps) {
+  console.log('🔥 CORRECT MessagesPanel component loaded! (This should show if the right component is being used)');
   const router = useRouter();
-  const [conversations, setConversations] = useState<Conversation[]>(mockConversations);
-  const [onlineUsers, setOnlineUsers] = useState<User[]>(mockUsers.slice(0, 6));
+  const { user: currentUser } = useUser();
+  const debugLogger = useDebugLogger('MessagesPanel');
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState(false);
   const panelOpacity = useSharedValue(0);
 
+  // Load conversations when panel becomes visible
+  const loadConversations = async () => {
+    if (!currentUser?.id) {
+      debugLogger.warn('MESSAGES_PANEL', 'LOAD_CONVERSATIONS_SKIP', 'No current user ID available');
+      return;
+    }
+    
+    try {
+      setLoading(true);
+      debugLogger.info('MESSAGES_PANEL', 'LOAD_CONVERSATIONS', `Loading conversations for user: ${currentUser.id}`);
+      
+      const conversations = await dataService.message.getConversations(currentUser.id);
+      setConversations(conversations);
+      
+      // Direct console.log to see the actual data structure
+      console.log('🔍 MESSAGES_PANEL - Raw conversations data:', JSON.stringify(conversations, null, 2));
+      
+      debugLogger.success('MESSAGES_PANEL', 'LOAD_CONVERSATIONS', `Loaded ${conversations.length} conversations`, { 
+        conversations: conversations.map(c => ({ 
+          id: c.id, 
+          participantCount: c.participants.length,
+          hasLastMessage: !!c.lastMessage,
+          lastMessageType: typeof c.lastMessage,
+          lastMessageContent: c.lastMessage?.content,
+          lastMessageTimestamp: c.lastMessage?.timestamp
+        }))
+      });
+      
+      // Also log if we have any conversations without proper data
+      conversations.forEach((conv, index) => {
+        if (!conv.lastMessage) {
+          debugLogger.warn('MESSAGES_PANEL', 'CONVERSATION_NO_MESSAGE', `Conversation ${index} has no lastMessage`, { conversationId: conv.id });
+        }
+        if (conv.participants.length === 0) {
+          debugLogger.warn('MESSAGES_PANEL', 'CONVERSATION_NO_PARTICIPANTS', `Conversation ${index} has no participants`, { conversationId: conv.id });
+        }
+      });
+      
+    } catch (error) {
+      debugLogger.error('MESSAGES_PANEL', 'LOAD_CONVERSATIONS_ERROR', 'Failed to load conversations', error);
+      setConversations([]); // Reset to empty array on error
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
+    console.log('🚀 MESSAGES_PANEL - Panel visibility changed:', isVisible, 'User ID:', currentUser?.id);
+    
     if (isVisible) {
       panelOpacity.value = withSpring(1, { damping: 15 });
+      // Load conversations when panel becomes visible
+      console.log('📱 MESSAGES_PANEL - About to load conversations...');
+      loadConversations();
     } else {
       panelOpacity.value = withTiming(0, { duration: 300 });
     }
-  }, [isVisible]);
+  }, [isVisible, currentUser?.id]);
 
   const triggerHaptic = () => {
     try {
@@ -59,7 +117,7 @@ export default function MessagesPanel({ isVisible, onClose }: MessagesPanelProps
 
   const handleConversationPress = (conversation: Conversation) => {
     triggerHaptic();
-    const otherUser = conversation.participants.find(p => p.id !== '1');
+    const otherUser = conversation.participants.find(p => p.id !== currentUser?.id);
     if (otherUser) {
       onClose();
       router.push({
@@ -107,7 +165,7 @@ export default function MessagesPanel({ isVisible, onClose }: MessagesPanelProps
   );
 
   const renderConversation = ({ item, index }: { item: Conversation; index: number }) => {
-    const otherUser = item.participants.find(p => p.id !== '1');
+    const otherUser = item.participants.find(p => p.id !== currentUser?.id);
     if (!otherUser) return null;
 
     return (
@@ -129,12 +187,15 @@ export default function MessagesPanel({ isVisible, onClose }: MessagesPanelProps
               {otherUser.username}
             </Text>
             <Text style={styles.conversationTime}>
-              {item.lastMessage.timestamp}
+              {item.lastMessage?.timestamp ? new Date(item.lastMessage.timestamp).toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit'
+              }) : 'Now'}
             </Text>
           </View>
           
           <Text style={styles.conversationMessage} numberOfLines={2}>
-            {item.lastMessage.content}
+            {item.lastMessage?.content || 'No messages yet'}
           </Text>
         </View>
         
@@ -204,18 +265,44 @@ export default function MessagesPanel({ isVisible, onClose }: MessagesPanelProps
           
           {renderOnlineSection()}
           
-          {/* Conversations List */}
-          <View style={styles.conversationsSection}>
-            <Text style={styles.sectionTitle}>Recent</Text>
+                  {/* Conversations List */}
+        <View style={styles.conversationsSection}>
+          <Text style={styles.sectionTitle}>Recent</Text>
+          
+{(() => {
+            console.log('🔄 MESSAGES_PANEL - Render check:', { 
+              loading, 
+              conversationsLength: conversations.length,
+              conversations: conversations.map(c => ({ id: c.id, participants: c.participants.length }))
+            });
             
-            <FlatList
-              data={conversations}
-              renderItem={renderConversation}
-              keyExtractor={(item) => item.id}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.conversationsList}
-            />
-          </View>
+            if (loading) {
+              return (
+                <View style={styles.loadingContainer}>
+                  <ActivityIndicator size="small" color="#6C5CE7" />
+                  <Text style={styles.loadingText}>Loading conversations...</Text>
+                </View>
+              );
+            } else if (conversations.length > 0) {
+              return (
+                <FlatList
+                  data={conversations}
+                  renderItem={renderConversation}
+                  keyExtractor={(item) => item.id}
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.conversationsList}
+                />
+              );
+            } else {
+              return (
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyText}>No conversations yet</Text>
+                  <Text style={styles.emptySubtext}>Start a conversation to see it here</Text>
+                </View>
+              );
+            }
+          })()}
+        </View>
         </LinearGradient>
       </BlurView>
     </Animated.View>
@@ -322,6 +409,32 @@ const styles = StyleSheet.create({
   conversationsList: {
     paddingHorizontal: 20,
     paddingBottom: 20,
+  },
+  loadingContainer: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    marginTop: 8,
+    opacity: 0.7,
+  },
+  emptyContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  emptyText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  emptySubtext: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    opacity: 0.7,
+    textAlign: 'center',
   },
   conversationItem: {
     flexDirection: 'row',

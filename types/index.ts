@@ -74,6 +74,33 @@ export interface Story {
   // Additional fields from database
   imageUrl?: string;
   createdAt?: string;
+  // Enhanced fields for video/reel stories
+  mediaType?: 'image' | 'video' | 'reel';
+  videoUrl?: string;
+  video?: string; // Alternative field name
+  thumbnailUrl?: string;
+  duration?: number; // Video duration in seconds
+  aspectRatio?: string; // e.g., '9:16', '16:9'
+  isFullscreen?: boolean;
+  storyType?: 'story' | 'reel_story';
+  originalReelId?: string; // If story is from a reel
+  caption?: string;
+  viewCount?: number;
+  likesCount?: number;
+  musicInfo?: {
+    title?: string;
+    artist?: string;
+    url?: string;
+  };
+  effects?: {
+    filters?: string[];
+    stickers?: string[];
+  };
+  storySettings?: {
+    allowReplies?: boolean;
+    allowShares?: boolean;
+    visibility?: 'public' | 'friends' | 'private';
+  };
 }
 
 export interface Reel {
@@ -87,6 +114,7 @@ export interface Reel {
   shares: number;
   isLiked: boolean;
   isSaved: boolean;
+  isViewed?: boolean;
   duration: number;
   musicInfo?: {
     title: string;
@@ -98,6 +126,10 @@ export interface Reel {
   likesCount?: number;
   commentsCount?: number;
   sharesCount?: number;
+  viewCount?: number;
+  thumbnailUrl?: string;
+  isTrending?: boolean;
+  location?: string;
   musicTitle?: string;
   musicArtist?: string;
   musicCoverUrl?: string;
@@ -111,10 +143,24 @@ export interface Message {
   receiverId: string;
   content: string;
   timestamp: string;
+  // Message type and media support
+  type: 'text' | 'image' | 'audio' | 'video' | 'voice' | 'reel' | 'post' | 'story';
+  mediaUrl?: string;
+  thumbnailUrl?: string;
+  duration?: number; // For voice messages and video content
+  // Shared content references
+  sharedReel?: Reel;
+  sharedPost?: Post;
+  sharedStory?: Story;
   // Additional fields from database
   conversationId?: string;
   isRead?: boolean;
   createdAt?: string;
+  // Edit and delete fields
+  isEdited?: boolean;
+  editedAt?: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
 }
 
 export interface Conversation {
@@ -201,6 +247,19 @@ export interface HostProfile {
   isApproved: boolean;
   approvalDate?: string;
   rejectionReason?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface BulletinNote {
+  id: string;
+  userId: string;
+  title: string;
+  description?: string;
+  imageUrl?: string;
+  thumbnailUrl?: string;
+  noteType: 'sticky' | 'currency';
+  amount?: number;
   createdAt?: string;
   updatedAt?: string;
 }

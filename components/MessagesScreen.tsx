@@ -38,6 +38,7 @@ interface MessagesScreenProps {
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
 export default function MessagesScreen({ isVisible, onClose }: MessagesScreenProps) {
+  console.log('❌ WRONG MessagesScreen component loaded! (This uses mock data and should NOT be used)');
   const router = useRouter();
   const [conversations, setConversations] = useState<Conversation[]>(mockConversations);
   const [onlineUsers, setOnlineUsers] = useState<User[]>(mockUsers.slice(0, 6));

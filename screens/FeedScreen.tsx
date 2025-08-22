@@ -3,22 +3,21 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   FlatList,
   ScrollView,
   RefreshControl,
   TouchableOpacity,
-  Image,
   Dimensions,
   StatusBar,
   Platform,
   ImageBackground,
   Modal,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -34,15 +33,20 @@ import Animated, {
   SlideInRight,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { Heart, MessageCircle, Share2, Play, TrendingUp, Eye, Clock, X, Users } from 'lucide-react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { Heart, MessageCircle, Share2, Play, TrendingUp, Eye, Clock, X, Users, Trash2 } from 'lucide-react-native';
 import { Post, Story, User } from '../types';
 import { useComments } from '../contexts/CommentContext';
 import { useUser } from '../contexts/UserContext';
 import { dataService } from '../services/dataService';
 import StoryCarousel from '../components/StoryCarousel';
+import StoryViewer from '../components/StoryViewer';
+import CachedImage from '../components/CachedImage';
 import CommentSystem from '../components/CommentSystem';
 import SwipeContainer from '../components/SwipeContainer';
+import CameraScreen from '../components/CameraScreen';
 import { debug, useDebugLogger } from '@/utils/debugLogger';
+import { StoryCleanupManager, autoCleanupStories } from '@/utils/storyCleanup';
 
 const { width, height } = Dimensions.get('window');
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
@@ -101,11 +105,18 @@ const mockShorts = [
 const FeedScreenContent = () => {
   const debugLogger = useDebugLogger('FeedScreen');
   const router = useRouter();
+  const params = useLocalSearchParams();
 
-  // Debug: Page load
+  // Debug: Page load and params
   useEffect(() => {
     debug.pageLoad('Feed screen loaded');
-  }, []);
+    console.log('🔍 DEBUG: FeedScreen component mounted');
+    console.log('🔍 DEBUG: FeedScreen params:', params);
+    if (params && Object.keys(params).length > 0) {
+      console.log('🔍 DEBUG: Found params that might affect camera:', params);
+    }
+  }, [params]);
+
   const { user: currentUser } = useUser();
   
   // Log page load
@@ -125,10 +136,91 @@ const FeedScreenContent = () => {
   const [likesUsers, setLikesUsers] = useState<User[]>([]);
   const [isLoadingLikes, setIsLoadingLikes] = useState(false);
   
+  // Story viewer state
+  const [showStoryViewer, setShowStoryViewer] = useState(false);
+  const [selectedStoryIndex, setSelectedStoryIndex] = useState(0);
+  const [viewerStories, setViewerStories] = useState<Story[]>([]);
+  const [showStoryCreator, setShowStoryCreatorRaw] = useState(false);
+  const [isClosingCamera, setIsClosingCamera] = useState(false);
+  
+  // Story cleanup manager
+  const cleanupManagerRef = useRef<StoryCleanupManager | null>(null);
+  
+  // Custom setter that tracks where setShowStoryCreator is called from
+  const setShowStoryCreator = useCallback((value: boolean) => {
+    console.log('🔍 DEBUG: setShowStoryCreator called with value:', value);
+    if (value === true) {
+      console.log('🔍 DEBUG: Camera being opened! Stack trace:');
+      console.trace('Camera open stack trace');
+    }
+    setShowStoryCreatorRaw(value);
+  }, []);
+  
+  // Ensure camera state is properly reset on component mount and stays closed
+  useEffect(() => {
+    console.log('🔍 DEBUG: FeedScreen mounted, forcing camera state to false');
+    setShowStoryCreator(false);
+    setIsClosingCamera(false);
+    
+    // Aggressive defensive measure: keep forcing camera closed for first 3 seconds
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts++;
+      console.log(`🔍 DEBUG: Defensive camera close attempt ${attempts}`);
+      setShowStoryCreator(false);
+      
+      if (attempts >= 6) { // Stop after 3 seconds (6 attempts * 500ms)
+        clearInterval(interval);
+        console.log('🔍 DEBUG: Defensive camera closing stopped');
+      }
+    }, 500);
+    
+    return () => clearInterval(interval);
+  }, [setShowStoryCreator]);
+  
+  // Debug: Track showStoryCreator state changes to find auto-open issue
+  useEffect(() => {
+    console.log('🔍 DEBUG: showStoryCreator state changed to:', showStoryCreator);
+    if (showStoryCreator) {
+      console.log('🔍 DEBUG: Camera screen is opening - CameraScreen component will be rendered');
+      console.trace('Camera auto-open trace');
+    } else {
+      console.log('🔍 DEBUG: Camera screen is closed - CameraScreen component will be unmounted');
+    }
+  }, [showStoryCreator]);
+  
   // Animation values
   const scrollY = useSharedValue(0);
   const headerOpacity = useSharedValue(1);
   const headerGlow = useSharedValue(0);
+
+  // Initialize story cleanup manager
+  useEffect(() => {
+    if (cleanupManagerRef.current) {
+      cleanupManagerRef.current.destroy();
+    }
+    
+    cleanupManagerRef.current = new StoryCleanupManager(stories, (cleanedStories) => {
+      console.log('🧹 Stories cleaned up, updating state');
+      setStories(cleanedStories);
+    });
+    
+    // Start auto-cleanup every 30 minutes
+    cleanupManagerRef.current.startAutoCleanup(30);
+    
+    return () => {
+      if (cleanupManagerRef.current) {
+        cleanupManagerRef.current.destroy();
+      }
+    };
+  }, []);
+
+  // Update cleanup manager when stories change
+  useEffect(() => {
+    if (cleanupManagerRef.current) {
+      cleanupManagerRef.current.updateStories(stories);
+    }
+  }, [stories]);
 
   // Load data from database
   useEffect(() => {
@@ -145,14 +237,41 @@ const FeedScreenContent = () => {
     );
   }, []);
 
+  // Handle opening specific story from shared message
+  useEffect(() => {
+    if (params.openStory === 'true' && params.userId && params.storyId && stories.length > 0) {
+      console.log('📖 DEBUG: Opening story from shared message:', { userId: params.userId, storyId: params.storyId });
+      
+      // Find the story in the current stories array
+      const storyIndex = stories.findIndex(story => story.id === params.storyId);
+      
+      if (storyIndex !== -1) {
+        console.log('📖 DEBUG: Found story at index:', storyIndex);
+        setSelectedStoryIndex(storyIndex);
+        setViewerStories(stories);
+        setShowStoryViewer(true);
+      } else {
+        console.log('📖 DEBUG: Story not found in current stories, loading user stories');
+        // If story not found in current list, try to load stories for specific user
+        loadUserStories(params.userId as string, params.storyId as string);
+      }
+    }
+  }, [params.openStory, params.userId, params.storyId, stories]);
+
   const loadData = async () => {
     try {
       debug.dbQuery('feed_data', 'LOAD', { type: 'posts_and_stories' });
       setIsLoading(true);
       const [postsData, storiesData] = await Promise.all([
-        dataService.post.getPosts(),
+        dataService.post.getPosts(20, 0, currentUser?.id),
         dataService.story.getStories(),
       ]);
+      
+      // Debug: Log posts with image information
+      postsData.forEach((post, index) => {
+        debugLogger.info('Post loaded', `Post ${index + 1}: ID=${post.id}, HasImage=${!!post.image}, ImageUrl=${post.image || 'null'}`);
+      });
+      
       debug.dbSuccess('posts', 'LOAD', { count: postsData.length });
       debug.dbSuccess('stories', 'LOAD', { count: storiesData.length });
       setPosts(postsData);
@@ -203,6 +322,34 @@ const FeedScreenContent = () => {
     await loadData();
     debug.userAction('Pull to refresh completed');
   }, []);
+
+  // Load stories for a specific user when opening from shared message
+  const loadUserStories = async (userId: string, targetStoryId: string) => {
+    try {
+      console.log('📖 Loading stories for user:', userId);
+      const userStories = await dataService.story.getStoriesByUser(userId);
+      
+      if (userStories && userStories.length > 0) {
+        const storyIndex = userStories.findIndex(story => story.id === targetStoryId);
+        
+        if (storyIndex !== -1) {
+          console.log('📖 Found target story, opening viewer');
+          setSelectedStoryIndex(storyIndex);
+          setViewerStories(userStories);
+          setShowStoryViewer(true);
+        } else {
+          console.log('📖 Target story not found in user stories');
+          Alert.alert('Story Not Found', 'This story may have expired or been deleted.');
+        }
+      } else {
+        console.log('📖 No stories found for user');
+        Alert.alert('No Stories', 'This user has no stories available.');
+      }
+    } catch (error) {
+      console.error('📖 Error loading user stories:', error);
+      Alert.alert('Error', 'Failed to load story.');
+    }
+  };
 
   // Handle showing likes for a post
   const handleShowLikes = async (post: Post) => {
@@ -283,14 +430,170 @@ const FeedScreenContent = () => {
     // Share functionality would be implemented here
   }, []);
 
+  const handleDeletePost = useCallback((postId: string, postUsername: string) => {
+    debug.userAction('Delete post pressed', { postId });
+    
+    if (!currentUser) {
+      debug.userAction('No current user, skipping delete action');
+      return;
+    }
+
+    Alert.alert(
+      '🗑️ Delete Post',
+      `Are you sure you want to delete this post?\n\nThis action cannot be undone and will permanently remove the post and all associated comments and likes.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => debug.userAction('Delete post cancelled', { postId })
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              debug.userAction('Confirming delete post', { postId, userId: currentUser.id });
+              
+              const success = await dataService.post.deletePost(postId, currentUser.id);
+              if (success) {
+                debug.userAction('Post deleted successfully', { postId });
+                // Remove post from local state
+                setPosts(prevPosts => prevPosts.filter(post => post.id !== postId));
+                
+                Alert.alert(
+                  '✅ Success', 
+                  'Post has been deleted successfully!',
+                  [{ text: 'OK', style: 'default' }]
+                );
+                
+                try {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                } catch (error) {
+                  debugLogger.error('Haptics error during delete confirmation', (error as Error).message);
+                }
+              } else {
+                debug.userAction('Failed to delete post', { postId });
+                Alert.alert(
+                  '❌ Error', 
+                  'Failed to delete post. Please check your connection and try again.',
+                  [{ text: 'OK', style: 'default' }]
+                );
+              }
+            } catch (error) {
+              debugLogger.error('Error deleting post', (error as Error).message);
+              Alert.alert(
+                '❌ Error', 
+                'An unexpected error occurred while deleting the post. Please try again.',
+                [{ text: 'OK', style: 'default' }]
+              );
+            }
+          }
+        }
+      ],
+      { cancelable: true }
+    );
+  }, [currentUser]);
+
   const handleStoryPress = useCallback((story: Story) => {
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     } catch (error) {
       console.error('Haptics error:', error);
     }
-    // Story viewer would open here
-  }, []);
+    
+    // Get all stories ordered by creation date (newest first)
+    const filteredStories = stories?.filter(s => s && s.user) || [];
+    
+    // Group stories by user to organize them properly
+    const userStoriesMap = new Map<string, Story[]>();
+    filteredStories.forEach(s => {
+      if (s.user?.id) {
+        if (!userStoriesMap.has(s.user.id)) {
+          userStoriesMap.set(s.user.id, []);
+        }
+        userStoriesMap.get(s.user.id)?.push(s);
+      }
+    });
+    
+    // Sort each user's stories by creation date (newest first)
+    userStoriesMap.forEach((userStories) => {
+      userStories.sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return timeB - timeA; // Newest first
+      });
+    });
+    
+    // Get current user's stories and other users' stories
+    const currentUserStories = userStoriesMap.get(currentUser?.id || '') || [];
+    const otherUsersStories: Story[] = [];
+    
+    userStoriesMap.forEach((userStories, userId) => {
+      if (userId !== currentUser?.id) {
+        otherUsersStories.push(...userStories);
+      }
+    });
+    
+    // Arrange all stories with current user's stories first, then others
+    const allOrderedStories = [
+      ...currentUserStories,
+      ...otherUsersStories
+    ];
+    
+    // Find the exact story index in the complete array
+    const storyIndex = allOrderedStories.findIndex(s => s.id === story.id);
+    
+    if (storyIndex !== -1) {
+      setSelectedStoryIndex(storyIndex);
+      setViewerStories(allOrderedStories);
+      setShowStoryViewer(true);
+    }
+  }, [stories, currentUser]);
+
+  const createStoryWithMedia = useCallback(async (mediaUri: string, mediaType: 'image' | 'video') => {
+    if (!currentUser?.id) {
+      console.error('No current user ID available for story creation');
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      console.log('Creating story with:', { userId: currentUser.id, mediaUri, mediaType });
+      
+      // Create story via dataService with media type support
+      const newStory = await dataService.story.createStory(currentUser.id, mediaUri, mediaType);
+      
+      console.log('Story creation result:', newStory);
+      
+      if (newStory) {
+        // Add the new story and sort all stories to ensure correct order
+        setStories(prevStories => {
+          const allStories = [newStory, ...prevStories];
+          // Sort by creation date (newest first) to ensure consistent ordering
+          return allStories.sort((a, b) => {
+            const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return timeB - timeA; // Newest first
+          });
+        });
+        
+        Alert.alert(
+          'Story Created!',
+          `Your ${mediaType} story has been shared successfully.`,
+          [{ text: 'OK' }]
+        );
+      } else {
+        console.error('Story creation returned null/undefined');
+        throw new Error('Failed to create story - no data returned');
+      }
+    } catch (error) {
+      console.error('Error creating story:', error);
+      console.error('Story creation details:', { userId: currentUser.id, mediaUri, mediaType });
+      Alert.alert('Error', 'Failed to create story. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [currentUser]);
 
   const handleAddStory = useCallback(() => {
     try {
@@ -298,8 +601,79 @@ const FeedScreenContent = () => {
     } catch (error) {
       console.error('Haptics error:', error);
     }
-    router.push('/(tabs)/create');
+    
+    // Navigate to create screen with story mode
+    router.push({
+      pathname: '/(tabs)/create',
+      params: { mode: 'story' }
+    });
   }, [router]);
+
+  const handleStoryCreated = useCallback(async (mediaUri: string, mediaType: 'image' | 'video') => {
+    // Create story in database
+    await createStoryWithMedia(mediaUri, mediaType);
+    
+    // Close the story creator
+    setShowStoryCreator(false);
+    
+    // Show success feedback
+    try {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error) {
+      console.error('Haptics error:', error);
+    }
+  }, [createStoryWithMedia]);
+
+  const handleMediaCaptured = useCallback(async (media: { uri: string; type: 'image' | 'video' }) => {
+    try {
+      // Create story directly with the captured media
+      await createStoryWithMedia(media.uri, media.type);
+      
+      // Show success feedback
+      try {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } catch (error) {
+        console.error('Haptics error:', error);
+      }
+      
+      // Refresh stories
+      await loadData();
+    } catch (error) {
+      console.error('Error creating story from captured media:', error);
+      Alert.alert('Error', 'Failed to create story. Please try again.');
+    }
+  }, [createStoryWithMedia, loadData]);
+
+  const handleStoryFromGallery = useCallback(async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please grant media library access to select media for your story.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.All, // Allow both images and videos
+        allowsEditing: true,
+        aspect: [9, 16], // Story aspect ratio
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0] && currentUser?.id) {
+        const asset = result.assets[0];
+        const mediaType = asset.type === 'video' ? 'video' : 'image';
+        await createStoryWithMedia(asset.uri, mediaType);
+      }
+    } catch (error) {
+      console.error('Error selecting media for story:', error);
+      Alert.alert('Error', 'Failed to select media. Please try again.');
+    }
+  }, [currentUser, createStoryWithMedia]);
+
+  // Keep backward compatibility
+  const createStoryWithImage = useCallback(async (imageUri: string) => {
+    return createStoryWithMedia(imageUri, 'image');
+  }, [createStoryWithMedia]);
 
   const handleMessagesPress = useCallback(() => {
     try {
@@ -328,6 +702,27 @@ const FeedScreenContent = () => {
       });
     }
   }, [router, currentUser?.id]);
+
+  const handleCameraClose = useCallback(() => {
+    // Prevent multiple rapid calls
+    if (isClosingCamera) {
+      console.log('🔍 DEBUG: Camera already closing, ignoring duplicate call');
+      return;
+    }
+    
+    console.log('🔍 DEBUG: FeedScreen onClose handler called - simply closing camera modal');
+    setIsClosingCamera(true);
+    setShowStoryCreator(false);
+    
+    // Don't navigate - just close the camera modal
+    // The user is already on the feed screen, we just need to hide the modal
+    console.log('🔍 DEBUG: Camera modal closed, staying on current screen');
+    
+    // Reset the closing flag after a delay
+    setTimeout(() => {
+      setIsClosingCamera(false);
+    }, 500);
+  }, [isClosingCamera]);
 
   const handleShortsPress = useCallback(() => {
     try {
@@ -397,7 +792,7 @@ const FeedScreenContent = () => {
   };
 
   // Enhanced Post component with smooth animations
-  const PostItem = ({ post, index }: { post: Post; index: number }) => {
+  const PostItem = React.memo(({ post, index }: { post: Post; index: number }) => {
     const likeScale = useSharedValue(1);
     const commentScale = useSharedValue(1);
     const shareScale = useSharedValue(1);
@@ -405,6 +800,8 @@ const FeedScreenContent = () => {
     const [isLiked, setIsLiked] = useState(post.isLiked);
     const [likes, setLikes] = useState(post.likes);
     const [isLoadingLikes, setIsLoadingLikes] = useState(false);
+    const [imageError, setImageError] = useState(false);
+    const [imageLoading, setImageLoading] = useState(true);
 
     // Load actual likes count
     useEffect(() => {
@@ -497,7 +894,27 @@ const FeedScreenContent = () => {
           <View style={styles.mediaContainer}>
             {post.image && (
               <AnimatedImageBackground
-                source={{ uri: post.image }} 
+                source={{ 
+                  uri: imageError 
+                    ? 'https://images.pexels.com/photos/1181677/pexels-photo-1181677.jpeg?auto=compress&cs=tinysrgb&w=400'
+                    : post.image 
+                }}
+                onError={(error) => {
+                  setImageError(true);
+                  setImageLoading(false);
+                  debugLogger.error('Image load error', `Failed to load image for post ${post.id}: ${post.image}. Using fallback image.`);
+                  console.error('Image load error:', error);
+                }}
+                onLoad={() => {
+                  setImageLoading(false);
+                  // Significantly reduce logging frequency to prevent console spam
+                  if (!imageError && __DEV__ && Math.random() < 0.005) {
+                    debugLogger.info('FeedScreen', 'Image loaded', `Successfully loaded image for post ${post.id}: ${post.image}`);
+                  }
+                }}
+                onLoadStart={() => {
+                  setImageLoading(true);
+                }}
                 style={styles.postImage}
                 imageStyle={styles.postImageStyle}
               >
@@ -505,6 +922,22 @@ const FeedScreenContent = () => {
                   colors={['transparent', 'rgba(30, 30, 30, 0.7)']}
                   style={styles.imageGradient}
                 />
+
+                {/* Loading Indicator */}
+                {imageLoading && (
+                  <View style={styles.imageLoadingOverlay}>
+                    <ActivityIndicator size="large" color="#6C5CE7" />
+                    <Text style={styles.imageLoadingText}>Loading image...</Text>
+                  </View>
+                )}
+
+                {/* Error Message */}
+                {imageError && (
+                  <View style={styles.imageErrorOverlay}>
+                    <Text style={styles.errorText}>📷 Image unavailable</Text>
+                    <Text style={styles.errorSubtext}>Using placeholder</Text>
+                  </View>
+                )}
                 
                 {/* Trending Badge */}
                 {post.isTrending && (
@@ -520,15 +953,29 @@ const FeedScreenContent = () => {
                 {/* User Info Overlay */}
                 <View style={styles.userOverlay}>
                   <TouchableOpacity 
-                    onPress={() => handleUserPress(post.user.id)} 
+                    onPress={() => post.user?.id && handleUserPress(post.user.id)} 
                     style={styles.userInfo}
                   >
-                    <Image source={{ uri: post.user.avatar }} style={styles.userAvatar} />
+                    <CachedImage 
+                      source={{ uri: post.user?.avatar || 'https://via.placeholder.com/150' }} 
+                      style={styles.userAvatar} 
+                      cacheType="thumbnail"
+                    />
                     <View style={styles.userDetails}>
-                      <Text style={styles.username}>@{post.user.username}</Text>
+                      <Text style={styles.username}>@{post.user?.username || 'Unknown User'}</Text>
                       <Text style={styles.timestamp}>{post.timestamp}</Text>
                     </View>
                   </TouchableOpacity>
+
+                  {/* Delete Button - Only show for post owner */}
+                  {currentUser && post.user?.id && post.user.id === currentUser.id && (
+                    <TouchableOpacity
+                      onPress={() => handleDeletePost(post.id, post.user?.username || 'Unknown User')}
+                      style={styles.deleteButton}
+                    >
+                      <Trash2 size={18} color="#FF6B6B" strokeWidth={2} />
+                    </TouchableOpacity>
+                  )}
                 </View>
               </AnimatedImageBackground>
             )}
@@ -600,7 +1047,7 @@ const FeedScreenContent = () => {
         </Animated.View>
       </Animated.View>
     );
-  };
+  });
 
   // Enhanced Shorts section with animations
   const ShortsSection = () => {
@@ -712,7 +1159,7 @@ const FeedScreenContent = () => {
     );
   };
 
-  const renderPost = ({ item, index }: { item: Post; index: number }) => {
+  const renderPost = React.useCallback(({ item, index }: { item: Post; index: number }) => {
     // Insert shorts section after 2nd post
     if (index === 2) {
       return (
@@ -723,7 +1170,7 @@ const FeedScreenContent = () => {
       );
     }
     return <PostItem post={item} index={index} />;
-  };
+  }, []);
 
   // Check authentication and redirect if needed
   const { checkAuthAndRedirect } = useUser();
@@ -751,7 +1198,7 @@ const FeedScreenContent = () => {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={[styles.container, { backgroundColor: '#1E1E1E' }]}>
       <StatusBar 
         barStyle="light-content" 
         backgroundColor="#1E1E1E" 
@@ -762,9 +1209,9 @@ const FeedScreenContent = () => {
       
       <FlatList<Post>
         ref={flatListRef}
-        data={posts}
+        data={posts.filter(item => item && item.id)}
         renderItem={renderPost}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item, index) => item?.id || `post-${index}`}
         onScroll={handleScroll}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
@@ -782,9 +1229,13 @@ const FeedScreenContent = () => {
             stories={stories}
             onAddStory={handleAddStory}
             onStoryPress={handleStoryPress}
+            onMediaCaptured={handleMediaCaptured}
           />
         }
-        contentContainerStyle={styles.feedContent}
+        contentContainerStyle={[
+          styles.feedContent,
+          Platform.OS === 'android' && { paddingBottom: 100 } // Extra padding for navigation bar
+        ]}
         removeClippedSubviews={Platform.OS !== 'web'}
         maxToRenderPerBatch={3}
         windowSize={5}
@@ -845,7 +1296,11 @@ const FeedScreenContent = () => {
                         handleUserPress(user.id);
                       }}
                     >
-                      <Image source={{ uri: user.avatar }} style={styles.likesUserAvatar} />
+                      <CachedImage 
+                        source={{ uri: user.avatar }} 
+                        style={styles.likesUserAvatar} 
+                        cacheType="thumbnail"
+                      />
                       <View style={styles.likesUserInfo}>
                         <Text style={styles.likesUsername}>@{user.username}</Text>
                         {user.bio && (
@@ -873,7 +1328,25 @@ const FeedScreenContent = () => {
           </Animated.View>
         </View>
       </Modal>
-    </SafeAreaView>
+
+      {/* Story Viewer */}
+      <StoryViewer
+        visible={showStoryViewer}
+        stories={viewerStories}
+        initialStoryIndex={selectedStoryIndex}
+        onClose={() => setShowStoryViewer(false)}
+      />
+      
+      {/* Story Creator Camera - Only render when needed */}
+      {showStoryCreator && (
+        <CameraScreen
+          isVisible={showStoryCreator}
+          onClose={handleCameraClose}
+          initialMode="video"
+          onPostCreate={handleStoryCreated}
+        />
+      )}
+    </View>
   );
 };
 
@@ -889,6 +1362,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#1E1E1E',
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0,
   },
   loadingContainer: {
     flex: 1,
@@ -1041,10 +1515,26 @@ const styles = StyleSheet.create({
     bottom: 16,
     left: 16,
     right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   userInfo: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
+  },
+  deleteButton: {
+    padding: 8,
+    backgroundColor: 'rgba(255, 107, 107, 0.15)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 107, 0.3)',
+    shadowColor: '#FF6B6B',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 4,
   },
   userAvatar: {
     width: 44,
@@ -1405,6 +1895,49 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#999999',
     textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+  },
+  
+  // Image loading and error styles
+  imageLoadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 16,
+  },
+  imageErrorOverlay: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    backgroundColor: 'rgba(255, 59, 48, 0.9)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  imageLoadingText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    marginTop: 8,
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+  },
+  errorText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif-medium',
+  },
+  errorSubtext: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    textAlign: 'center',
+    marginTop: 2,
     fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
   },
 });

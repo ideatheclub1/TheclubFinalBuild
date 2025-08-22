@@ -1,10 +1,115 @@
 import { supabase } from '@/app/lib/supabase';
 import { 
   User, Post, Story, Reel, Message, Conversation, Comment, 
-  Like, Hashtag, Notification, Booking, Review, HostProfile 
+  Review, HostProfile, BulletinNote 
 } from '@/types';
 import { calculateDistance } from '@/utils/distanceCalculator';
 import { debug, debugLogger } from '@/utils/debugLogger';
+import { cacheService } from './cacheService';
+import * as FileSystem from 'expo-file-system';
+
+// =====================================================
+// FILE HELPERS
+// =====================================================
+
+const base64ToUint8Array = (base64: string): Uint8Array => {
+  const cleaned = base64.replace(/^data:.*;base64,/, '');
+  
+  // Use native atob if available (web), otherwise use manual conversion
+  let binaryString: string;
+  if (typeof atob !== 'undefined') {
+    binaryString = atob(cleaned);
+  } else {
+    // Manual base64 decode for React Native
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let result = '';
+    let i = 0;
+    
+    while (i < cleaned.length) {
+      const encoded1 = chars.indexOf(cleaned[i++]);
+      const encoded2 = chars.indexOf(cleaned[i++]);
+      const encoded3 = chars.indexOf(cleaned[i++]);
+      const encoded4 = chars.indexOf(cleaned[i++]);
+      
+      const bitmap = (encoded1 << 18) | (encoded2 << 12) | (encoded3 << 6) | encoded4;
+      
+      result += String.fromCharCode((bitmap >> 16) & 255);
+      if (encoded3 !== 64) result += String.fromCharCode((bitmap >> 8) & 255);
+      if (encoded4 !== 64) result += String.fromCharCode(bitmap & 255);
+    }
+    binaryString = result;
+  }
+  
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i += 1) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+};
+
+const readUriToUint8Array = async (uri: string): Promise<Uint8Array> => {
+  debugLogger.info('STORAGE', 'READ_URI_START', `Reading file from URI: ${uri}`);
+  
+  // Method 1: Try FileSystem first for React Native file URIs
+  if (uri.startsWith('file://') || uri.startsWith('content://') || uri.startsWith('ph://')) {
+    try {
+      debugLogger.info('STORAGE', 'READ_URI_FILESYSTEM', 'Using FileSystem for native URI');
+      const base64 = await FileSystem.readAsStringAsync(uri, { 
+        encoding: FileSystem.EncodingType.Base64 
+      });
+      
+      if (!base64 || base64.length === 0) {
+        throw new Error('Empty base64 string from FileSystem');
+      }
+      
+      const u8 = base64ToUint8Array(base64);
+      debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `FileSystem read successful: ${u8.byteLength} bytes`);
+      
+      if (u8.byteLength > 0) return u8;
+      throw new Error('Converted Uint8Array is empty');
+    } catch (fsError) {
+      debugLogger.error('STORAGE', 'READ_URI_FILESYSTEM_ERROR', 'FileSystem read failed', fsError);
+      // Continue to next method
+    }
+  }
+  
+  // Method 2: Try fetch for web URIs and some native URIs
+  try {
+    debugLogger.info('STORAGE', 'READ_URI_FETCH', 'Using fetch for URI');
+    const resp = await fetch(uri);
+    
+    if (!resp.ok) {
+      throw new Error(`Fetch failed with status: ${resp.status}`);
+    }
+    
+    const ab = await resp.arrayBuffer();
+    const u8 = new Uint8Array(ab);
+    debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `Fetch read successful: ${u8.byteLength} bytes`);
+    
+    if (u8.byteLength > 0) return u8;
+    throw new Error('Fetched ArrayBuffer is empty');
+  } catch (fetchError) {
+    debugLogger.error('STORAGE', 'READ_URI_FETCH_ERROR', 'Fetch read failed', fetchError);
+  }
+  
+  // Method 3: Last resort - try to read as data URI
+  if (uri.startsWith('data:')) {
+    try {
+      debugLogger.info('STORAGE', 'READ_URI_DATA', 'Processing data URI');
+      const u8 = base64ToUint8Array(uri);
+      debugLogger.info('STORAGE', 'READ_URI_SUCCESS', `Data URI read successful: ${u8.byteLength} bytes`);
+      
+      if (u8.byteLength > 0) return u8;
+    } catch (dataError) {
+      debugLogger.error('STORAGE', 'READ_URI_DATA_ERROR', 'Data URI read failed', dataError);
+    }
+  }
+
+  const error = new Error(`Unable to read file contents from URI: ${uri}`);
+  debugLogger.error('STORAGE', 'READ_URI_FAILED', 'All read methods failed', error);
+  throw error;
+};
 
 // =====================================================
 // USER OPERATIONS
@@ -782,9 +887,21 @@ export const userService = {
 // =====================================================
 
 export const postService = {
-  // Get all posts with user data
-  async getPosts(limit = 20, offset = 0): Promise<Post[]> {
+  // Get all posts with user data (with caching)
+  async getPosts(limit = 20, offset = 0, currentUserId?: string): Promise<Post[]> {
     try {
+      // Check cache first for the first page
+      if (offset === 0) {
+        const cacheKey = `posts_${currentUserId || 'guest'}_${limit}`;
+        const cachedPosts = await cacheService.get<Post[]>('posts', cacheKey);
+        if (cachedPosts) {
+          debug.cacheHit('posts', 'GET_POSTS', { cacheKey, count: cachedPosts.length });
+          return cachedPosts;
+        }
+      }
+
+      debug.dbQuery('posts', 'SELECT', { limit, offset, currentUserId });
+      
       const { data, error } = await supabase
         .from('posts')
         .select(`
@@ -798,7 +915,22 @@ export const postService = {
 
       if (error || !data) return [];
 
-      return data.map(post => ({
+      // Get like status for current user if provided
+      let userLikes: Set<string> = new Set();
+      if (currentUserId) {
+        const postIds = data.map(post => post.id);
+        const { data: likesData } = await supabase
+          .from('likes')
+          .select('post_id')
+          .eq('user_id', currentUserId)
+          .in('post_id', postIds);
+        
+        if (likesData) {
+          userLikes = new Set(likesData.map(like => like.post_id));
+        }
+      }
+
+      const posts = data.map(post => ({
         id: post.id,
         user: {
           id: post.user_profiles.id,
@@ -820,13 +952,24 @@ export const postService = {
         likesCount: post.likes_count || 0,
         comments: post.comments_count || 0,
         commentsCount: post.comments_count || 0,
-        isLiked: false, // Will be checked separately
+        isLiked: userLikes.has(post.id),
         isTrending: post.is_trending || false,
         timestamp: post.created_at,
         createdAt: post.created_at,
         updatedAt: post.updated_at,
       }));
+
+      // Cache the first page results
+      if (offset === 0) {
+        const cacheKey = `posts_${currentUserId || 'guest'}_${limit}`;
+        await cacheService.set('posts', cacheKey, posts);
+        debug.cacheMiss('posts', 'GET_POSTS', { cacheKey, count: posts.length });
+      }
+
+      debug.dbSuccess('posts', 'SELECT', { count: posts.length });
+      return posts;
     } catch (error) {
+      debug.dbError('posts', 'SELECT', error);
       console.error('Error fetching posts:', error);
       return [];
     }
@@ -874,6 +1017,19 @@ export const postService = {
         return [];
       }
 
+      // Get like status for current user
+      let userLikes: Set<string> = new Set();
+      const postIds = data.map(post => post.id);
+      const { data: likesData } = await supabase
+        .from('likes')
+        .select('post_id')
+        .eq('user_id', currentUserId)
+        .in('post_id', postIds);
+      
+      if (likesData) {
+        userLikes = new Set(likesData.map(like => like.post_id));
+      }
+
       const posts = data.map(post => ({
         id: post.id,
         user: {
@@ -896,7 +1052,7 @@ export const postService = {
         likesCount: post.likes_count || 0,
         comments: post.comments_count || 0,
         commentsCount: post.comments_count || 0,
-        isLiked: false, // Will be checked separately
+        isLiked: userLikes.has(post.id),
         isTrending: post.is_trending || false,
         timestamp: post.created_at,
         createdAt: post.created_at,
@@ -960,7 +1116,7 @@ export const postService = {
   },
 
   // Get posts by user ID
-  async getPostsByUser(userId: string, limit = 20, offset = 0): Promise<Post[]> {
+  async getPostsByUser(userId: string, limit = 20, offset = 0, currentUserId?: string): Promise<Post[]> {
     try {
       const { data, error } = await supabase
         .from('posts')
@@ -975,6 +1131,21 @@ export const postService = {
         .range(offset, offset + limit - 1);
 
       if (error || !data) return [];
+
+      // Get like status for current user if provided
+      let userLikes: Set<string> = new Set();
+      if (currentUserId) {
+        const postIds = data.map(post => post.id);
+        const { data: likesData } = await supabase
+          .from('likes')
+          .select('post_id')
+          .eq('user_id', currentUserId)
+          .in('post_id', postIds);
+        
+        if (likesData) {
+          userLikes = new Set(likesData.map(like => like.post_id));
+        }
+      }
 
       return data.map(post => ({
         id: post.id,
@@ -998,7 +1169,7 @@ export const postService = {
         likesCount: post.likes_count || 0,
         comments: post.comments_count || 0,
         commentsCount: post.comments_count || 0,
-        isLiked: false, // Will be checked separately
+        isLiked: userLikes.has(post.id),
         isTrending: post.is_trending || false,
         timestamp: post.created_at,
         createdAt: post.created_at,
@@ -1130,6 +1301,44 @@ export const postService = {
       return [];
     }
   },
+
+  // Delete a post
+  async deletePost(postId: string, userId: string): Promise<boolean> {
+    try {
+      debug.dbQuery('posts', 'DELETE', { postId, userId });
+      
+      // First verify the user owns this post
+      const { data: post, error: verifyError } = await supabase
+        .from('posts')
+        .select('user_id')
+        .eq('id', postId)
+        .eq('user_id', userId)
+        .single();
+
+      if (verifyError || !post) {
+        debug.dbError('posts', 'DELETE_VERIFY', { error: 'Post not found or user not authorized' });
+        return false;
+      }
+
+      // Delete the post (CASCADE will handle related records)
+      const { error: deleteError } = await supabase
+        .from('posts')
+        .delete()
+        .eq('id', postId)
+        .eq('user_id', userId);
+
+      if (deleteError) {
+        debug.dbError('posts', 'DELETE', deleteError);
+        return false;
+      }
+
+      debug.dbSuccess('posts', 'DELETE', { postId, userId });
+      return true;
+    } catch (error) {
+      debug.dbError('posts', 'DELETE', { error: (error as Error).message });
+      return false;
+    }
+  },
 };
 
 // =====================================================
@@ -1168,10 +1377,25 @@ export const storyService = {
           responseTime: story.user_profiles.response_time || '5 min',
           isFollowing: false,
         },
-        image: story.image_url,
+        image: story.image_url || story.video_url,
         imageUrl: story.image_url,
+        videoUrl: story.video_url,
+        video: story.video_url,
+        mediaType: story.media_type || (story.video_url ? 'video' : 'image'),
+        aspectRatio: story.aspect_ratio || '9:16',
+        isFullscreen: story.is_fullscreen !== undefined ? story.is_fullscreen : true,
+        storyType: story.story_type || 'story',
+        duration: story.duration || (story.video_url ? 30 : 0),
         expiresAt: story.expires_at,
         createdAt: story.created_at,
+        viewCount: story.view_count || 0,
+        likesCount: story.likes_count || 0,
+        storySettings: {
+          allowReplies: true,
+          allowShares: true,
+          visibility: 'public' as const
+        },
+        timestamp: new Date(story.created_at).getTime(),
       }));
     } catch (error) {
       console.error('Error fetching stories:', error);
@@ -1179,38 +1403,247 @@ export const storyService = {
     }
   },
 
-  // Create a new story
-  async createStory(userId: string, imageUrl: string, expiresInHours = 24): Promise<Story | null> {
+  // Create a new story with support for both images and videos
+  async createStory(userId: string, mediaUrl: string, mediaType: 'image' | 'video' = 'image', expiresInHours = 24): Promise<Story | null> {
     try {
+      console.log('Creating story with parameters:', { userId, mediaUrl, mediaType, expiresInHours });
+      
       const expiresAt = new Date();
       expiresAt.setHours(expiresAt.getHours() + expiresInHours);
 
-      const { data: story, error } = await supabase
-        .from('stories')
-        .insert({
+      // Try enhanced approach first, fall back to basic if needed
+      let storyData: any;
+      let insertResult: any;
+      
+      // Enhanced approach with all new columns
+      try {
+        storyData = {
           user_id: userId,
-          image_url: imageUrl,
           expires_at: expiresAt.toISOString(),
-        })
-        .select()
-        .single();
+          media_type: mediaType,
+          is_fullscreen: true,
+          aspect_ratio: '9:16',
+          story_type: 'story',
+          view_count: 0,
+          likes_count: 0,
+        };
 
-      if (error || !story) return null;
+        if (mediaType === 'video') {
+          storyData.video_url = mediaUrl;
+          storyData.duration = 30;
+        } else {
+          storyData.image_url = mediaUrl;
+        }
+
+        console.log('Attempting enhanced story creation with data:', storyData);
+        
+        insertResult = await supabase
+          .from('stories')
+          .insert(storyData)
+          .select()
+          .single();
+
+        if (insertResult.error) {
+          throw insertResult.error;
+        }
+      } catch (enhancedError) {
+        console.log('Enhanced approach failed, trying basic approach:', enhancedError);
+        
+        // Fallback to basic approach (original columns only)
+        storyData = {
+          user_id: userId,
+          expires_at: expiresAt.toISOString(),
+        };
+
+        // For basic approach, use image_url for both images and videos
+        storyData.image_url = mediaUrl;
+
+        console.log('Attempting basic story creation with data:', storyData);
+        
+        insertResult = await supabase
+          .from('stories')
+          .insert(storyData)
+          .select()
+          .single();
+      }
+
+      if (insertResult.error) {
+        console.error('Story creation failed completely:', insertResult.error);
+        console.error('Final story data attempted:', storyData);
+        return null;
+      }
+      
+      const story = insertResult.data;
+      if (!story) {
+        console.error('No story returned from database');
+        return null;
+      }
+
+      console.log('Story created successfully:', story);
 
       const user = await userService.getUserProfile(userId);
-      if (!user) return null;
+      if (!user) {
+        console.error('Failed to get user profile for story');
+        return null;
+      }
 
-      return {
+      // Build return object with safe field access
+      const storyResult = {
         id: story.id,
         user,
-        image: story.image_url,
+        image: story.image_url || story.video_url || mediaUrl,
         imageUrl: story.image_url,
+        videoUrl: story.video_url || (mediaType === 'video' ? mediaUrl : undefined),
+        video: story.video_url || (mediaType === 'video' ? mediaUrl : undefined),
+        mediaType: story.media_type || mediaType,
+        aspectRatio: story.aspect_ratio || '9:16',
+        isFullscreen: story.is_fullscreen !== undefined ? story.is_fullscreen : true,
+        storyType: story.story_type || 'story',
+        duration: story.duration || (mediaType === 'video' ? 30 : 0),
         expiresAt: story.expires_at,
         createdAt: story.created_at,
+        viewCount: story.view_count || 0,
+        likesCount: story.likes_count || 0,
+        storySettings: {
+          allowReplies: true,
+          allowShares: true,
+          visibility: 'public' as const
+        },
+        timestamp: new Date(story.created_at).getTime(),
       };
+
+      console.log('Returning story result:', storyResult);
+      return storyResult;
     } catch (error) {
       console.error('Error creating story:', error);
       return null;
+    }
+  },
+
+  // Delete a story
+  async deleteStory(storyId: string, userId: string): Promise<boolean> {
+    try {
+      console.log('Deleting story:', { storyId, userId });
+      debugLogger.info('STORY', 'DELETE_START', `Deleting story: ${storyId}`);
+
+      // First verify the story belongs to the user
+      const { data: story, error: fetchError } = await supabase
+        .from('stories')
+        .select('user_id, image_url, video_url')
+        .eq('id', storyId)
+        .single();
+
+      if (fetchError || !story) {
+        console.error('Story not found:', fetchError);
+        return false;
+      }
+
+      if (story.user_id !== userId) {
+        console.error('User not authorized to delete this story');
+        return false;
+      }
+
+      // Delete the story from database
+      const { error: deleteError } = await supabase
+        .from('stories')
+        .delete()
+        .eq('id', storyId)
+        .eq('user_id', userId); // Double-check ownership
+
+      if (deleteError) {
+        console.error('Failed to delete story:', deleteError);
+        debugLogger.error('STORY', 'DELETE_ERROR', 'Failed to delete story from database', deleteError);
+        return false;
+      }
+
+      // TODO: Optionally delete the media file from storage
+      // This would require extracting the file path from the URL and calling storage delete
+      
+      debugLogger.info('STORY', 'DELETE_SUCCESS', `Story deleted successfully: ${storyId}`);
+      console.log('Story deleted successfully');
+      return true;
+    } catch (error) {
+      console.error('Error deleting story:', error);
+      debugLogger.error('STORY', 'DELETE_ERROR', 'Exception occurred while deleting story', error);
+      return false;
+    }
+  },
+
+  // Get stories for a specific user
+  async getStoriesByUser(userId: string): Promise<any[]> {
+    try {
+      console.log('Getting stories for user:', userId);
+      
+      const { data, error } = await supabase
+        .from('stories')
+        .select(`
+          *,
+          user_profiles!stories_user_id_fkey(
+            id, username, handle, avatar, profile_picture
+          )
+        `)
+        .eq('user_id', userId)
+        .eq('is_archived', false)
+        .gt('expires_at', new Date().toISOString())
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching user stories:', error);
+        return [];
+      }
+
+      if (!data || data.length === 0) {
+        console.log('No stories found for user:', userId);
+        return [];
+      }
+
+      // Map the data to the expected Story format
+      const stories = data.map(story => ({
+        id: story.id,
+        user: {
+          id: story.user_profiles?.id || userId,
+          username: story.user_profiles?.username || 'Unknown',
+          avatar: story.user_profiles?.avatar || story.user_profiles?.profile_picture || '',
+          email: '',
+          handle: story.user_profiles?.handle || story.user_profiles?.username || 'unknown',
+          fullName: story.user_profiles?.username || 'Unknown User',
+          bio: '',
+          location: '',
+          website: '',
+          followers: 0,
+          following: 0,
+          posts: 0,
+          isFollowing: false,
+          isPrivate: false,
+          isVerified: false,
+          createdAt: new Date().toISOString()
+        },
+        image: story.image_url || story.media_url,
+        imageUrl: story.image_url,
+        videoUrl: story.video_url,
+        video: story.video_url,
+        mediaType: story.media_type || 'image',
+        aspectRatio: story.aspect_ratio || '9:16',
+        isFullscreen: story.is_fullscreen !== false,
+        storyType: story.story_type || 'story',
+        duration: story.duration || 0,
+        expiresAt: story.expires_at,
+        createdAt: story.created_at,
+        viewCount: story.view_count || 0,
+        likesCount: story.likes_count || 0,
+        storySettings: {
+          allowReplies: true,
+          allowShares: true,
+          visibility: 'public' as const
+        },
+        timestamp: new Date(story.created_at).getTime(),
+      }));
+
+      console.log(`Found ${stories.length} stories for user ${userId}`);
+      return stories;
+    } catch (error) {
+      console.error('Error in getStoriesByUser:', error);
+      return [];
     }
   },
 };
@@ -1220,9 +1653,30 @@ export const storyService = {
 // =====================================================
 
 export const reelService = {
-  // Get all reels with user data
-  async getReels(limit = 20, offset = 0): Promise<Reel[]> {
+  // Get all reels with user data (with caching)
+  async getReels(limit = 20, offset = 0, currentUserId?: string): Promise<Reel[]> {
     try {
+      // Check cache first for the first page
+      if (offset === 0) {
+        const cacheKey = `reels_${currentUserId || 'guest'}_${limit}`;
+        const cachedReels = await cacheService.get<Reel[]>('reels', cacheKey);
+        if (cachedReels) {
+          debug.cacheHit('reels', 'GET_REELS', { cacheKey, count: cachedReels.length });
+          return cachedReels;
+        }
+      }
+
+      debug.dbQuery('reels', 'SELECT', { limit, offset, currentUserId });
+
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      const userId = currentUserId || user?.id;
+      
+      if (authError) {
+        debug.dbError('auth', 'GET_USER', authError);
+        // Continue without user context for unauthenticated access
+      }
+      
+      // Simple direct query - this was working before the likes fix
       const { data, error } = await supabase
         .from('reels')
         .select(`
@@ -1236,7 +1690,7 @@ export const reelService = {
 
       if (error || !data) return [];
 
-      return data.map(reel => ({
+      const reels = data.map(reel => ({
         id: reel.id,
         user: {
           id: reel.user_profiles.id,
@@ -1253,16 +1707,21 @@ export const reelService = {
         },
         videoUrl: reel.video_url,
         caption: reel.caption || '',
-        hashtags: [], // Will be fetched separately
+        hashtags: reel.hashtags || [], // Now includes hashtags from database
         likes: reel.likes_count || 0,
         likesCount: reel.likes_count || 0,
         comments: reel.comments_count || 0,
         commentsCount: reel.comments_count || 0,
         shares: reel.shares_count || 0,
         sharesCount: reel.shares_count || 0,
-        isLiked: false, // Will be checked separately
-        isSaved: false, // Will be checked separately
+        viewCount: reel.view_count || 0,
+        isLiked: false, // No user context for unauthenticated users
+        isSaved: false, // No user context for unauthenticated users
+        // isViewed: false, // Removed - property doesn't exist in Reel type // No user context for unauthenticated users
+        isTrending: (reel.likes_count || 0) > 1000 || (reel.view_count || 0) > 10000,
         duration: reel.duration || 0,
+        location: reel.location || '',
+        thumbnailUrl: reel.thumbnail_url,
         musicInfo: reel.music_title ? {
           title: reel.music_title,
           artist: reel.music_artist || '',
@@ -1275,7 +1734,18 @@ export const reelService = {
         createdAt: reel.created_at,
         updatedAt: reel.updated_at,
       }));
+
+      // Cache the first page results
+      if (offset === 0) {
+        const cacheKey = `reels_${currentUserId || 'guest'}_${limit}`;
+        await cacheService.set('reels', cacheKey, reels);
+        debug.cacheMiss('reels', 'GET_REELS', { cacheKey, count: reels.length });
+      }
+
+      debug.dbSuccess('reels', 'SELECT', { count: reels.length });
+      return reels;
     } catch (error) {
+      debug.dbError('reels', 'SELECT', error);
       console.error('Error fetching reels:', error);
       return [];
     }
@@ -1288,7 +1758,8 @@ export const reelService = {
     caption: string, 
     duration: number,
     hashtags?: string[],
-    musicInfo?: { title: string; artist: string; coverUrl: string }
+    musicInfo?: { title: string; artist: string; coverUrl: string },
+    thumbnailUrl?: string
   ): Promise<Reel | null> {
     try {
       const { data: reel, error } = await supabase
@@ -1296,6 +1767,7 @@ export const reelService = {
         .insert({
           user_id: userId,
           video_url: videoUrl,
+          thumbnail_url: thumbnailUrl,
           caption,
           duration,
           music_title: musicInfo?.title,
@@ -1319,6 +1791,7 @@ export const reelService = {
         id: reel.id,
         user,
         videoUrl: reel.video_url,
+        thumbnailUrl: reel.thumbnail_url,
         caption: reel.caption || '',
         hashtags: hashtags || [],
         likes: 0,
@@ -1329,6 +1802,7 @@ export const reelService = {
         sharesCount: 0,
         isLiked: false,
         isSaved: false,
+        // isViewed: false, // Removed - property doesn't exist in Reel type
         duration: reel.duration || 0,
         musicInfo: musicInfo,
         musicTitle: reel.music_title,
@@ -1341,6 +1815,537 @@ export const reelService = {
     } catch (error) {
       console.error('Error creating reel:', error);
       return null;
+    }
+  },
+
+  // Toggle reel like
+  async toggleLike(reelId: string, userId?: string): Promise<boolean> {
+    try {
+      debug.dbQuery('reel_likes', 'TOGGLE', { reelId, userId });
+      
+      // Get current user if not provided
+      if (!userId) {
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        if (authError || !user) {
+          debug.dbError('reel_likes', 'TOGGLE', { error: 'No authenticated user' });
+          return false;
+        }
+        userId = user.id;
+      }
+
+      // Use the simple toggle function
+      const { data, error } = await supabase
+        .rpc('toggle_reel_like_simple', { 
+          p_reel_id: reelId, 
+          p_user_id: userId 
+        });
+
+      if (error) throw error;
+      debug.dbSuccess('reel_likes', 'TOGGLE', { isLiked: data });
+      return data;
+    } catch (error) {
+      debug.dbError('reel_likes', 'TOGGLE', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Toggle reel save
+  async toggleSave(reelId: string): Promise<boolean> {
+    try {
+      debug.dbQuery('reel_saves', 'TOGGLE', { reelId });
+      const { data, error } = await supabase
+        .rpc('toggle_reel_save', { p_reel_id: reelId });
+
+      if (error) throw error;
+      debug.dbSuccess('reel_saves', 'TOGGLE', { isSaved: data });
+      return data;
+    } catch (error) {
+      debug.dbError('reel_saves', 'TOGGLE', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Increment reel view count (only once per user)
+  async incrementView(reelId: string): Promise<boolean> {
+    try {
+      debug.dbQuery('reels', 'INCREMENT_VIEW', { reelId });
+      const { data, error } = await supabase
+        .rpc('increment_reel_view', { p_reel_id: reelId });
+
+      if (error) throw error;
+      
+      const wasNewView = data === true;
+      debug.dbSuccess('reels', 'INCREMENT_VIEW', { reelId, wasNewView });
+      return wasNewView;
+    } catch (error) {
+      debug.dbError('reels', 'INCREMENT_VIEW', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Check if user has viewed a reel
+  async hasUserViewedReel(reelId: string): Promise<boolean> {
+    try {
+      debug.dbQuery('reels', 'CHECK_VIEW_STATUS', { reelId });
+      const { data, error } = await supabase
+        .rpc('get_user_reel_view_status', { p_reel_id: reelId });
+
+      if (error) throw error;
+      debug.dbSuccess('reels', 'CHECK_VIEW_STATUS', { reelId, hasViewed: data });
+      return data === true;
+    } catch (error) {
+      debug.dbError('reels', 'CHECK_VIEW_STATUS', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Share reel
+  async shareReel(reelId: string, shareType: 'internal' | 'external' | 'story' = 'internal', platform?: string): Promise<boolean> {
+    try {
+      debug.dbQuery('reel_shares', 'CREATE', { reelId, shareType, platform });
+      const { error } = await supabase
+        .from('reel_shares')
+        .insert([{
+          reel_id: reelId,
+          user_id: (await supabase.auth.getUser()).data.user?.id,
+          share_type: shareType,
+          platform,
+        }]);
+
+      if (error) throw error;
+      debug.dbSuccess('reel_shares', 'CREATE', { reelId });
+      return true;
+    } catch (error) {
+      debug.dbError('reel_shares', 'CREATE', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Get user's reels
+  async getUserReels(userId: string, limit: number = 20, offset: number = 0, currentUserId?: string): Promise<Reel[]> {
+    try {
+      debug.dbQuery('user_reels', 'GET', { userId, limit, offset });
+      
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      const viewerUserId = currentUserId || user?.id;
+      
+      if (authError) {
+        debug.dbError('auth', 'GET_USER', authError);
+        // Continue without user context for unauthenticated access
+      }
+      
+      // Get reels data
+      const { data, error } = await supabase
+        .from('reels')
+        .select(`
+          *,
+          user_profiles!inner(username, avatar, bio, location, age, is_host, hourly_rate, total_chats, response_time),
+          reel_music(title, artist, cover_url, duration)
+        `)
+        .eq('user_id', userId)
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (error) throw error;
+      
+      // Get like status for viewer if authenticated
+      let userLikes: Set<string> = new Set();
+      if (viewerUserId && data?.length) {
+        const reelIds = data.map(reel => reel.id);
+        const { data: likesData } = await supabase
+          .from('likes')
+          .select('reel_id')
+          .eq('user_id', viewerUserId)
+          .in('reel_id', reelIds);
+        
+        if (likesData) {
+          userLikes = new Set(likesData.map(like => like.reel_id));
+        }
+      }
+      
+      const transformedReels: Reel[] = (data || []).map((reel: any) => ({
+        id: reel.id,
+        user: {
+          id: reel.user_id,
+          username: reel.user_profiles.username,
+          avatar: reel.user_profiles.avatar,
+          bio: reel.user_profiles.bio,
+          location: reel.user_profiles.location,
+          age: reel.user_profiles.age,
+          isHost: reel.user_profiles.is_host,
+          hourlyRate: reel.user_profiles.hourly_rate,
+          totalChats: reel.user_profiles.total_chats,
+          responseTime: reel.user_profiles.response_time,
+          isFollowing: false,
+        },
+        videoUrl: reel.video_url,
+        caption: reel.caption,
+        hashtags: reel.hashtags || [],
+        likes: reel.likes_count,
+        comments: reel.comments_count,
+        shares: reel.shares_count,
+        isLiked: userLikes.has(reel.id),
+        isSaved: false, // Would need to check separately
+        duration: reel.duration,
+        musicInfo: reel.reel_music?.[0] ? {
+          title: reel.reel_music[0].title,
+          artist: reel.reel_music[0].artist,
+          coverUrl: reel.reel_music[0].cover_url,
+        } : undefined,
+        timestamp: formatTimestamp(reel.created_at),
+      }));
+
+      debug.dbSuccess('user_reels', 'GET', { count: transformedReels.length });
+      return transformedReels;
+    } catch (error) {
+      debug.dbError('user_reels', 'GET', { error: (error as Error).message });
+      return [];
+    }
+  },
+
+  // Get trending reels based on engagement
+  async getTrendingReels(limit = 20, offset = 0, currentUserId?: string): Promise<Reel[]> {
+    try {
+      debug.dbQuery('reels', 'TRENDING_SELECT', { limit, offset });
+      
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      const userId = currentUserId || user?.id;
+      
+      if (authError) {
+        debug.dbError('auth', 'GET_USER', authError);
+        // Continue without user context for unauthenticated access
+      }
+      
+      // Temporarily use fallback for everyone until RPC functions are fixed
+      // TODO: Re-enable RPC function once database is updated
+      /*
+      if (userId) {
+        const { data, error } = await supabase.rpc('get_reels_for_user', {
+          p_user_id: userId,
+          p_limit: limit,
+          p_offset: offset
+        });
+
+        if (error || !data) {
+          debug.dbError('reels', 'TRENDING_SELECT', error);
+          return [];
+        }
+
+        // Filter and sort for trending (last 7 days, high engagement)
+        const trendingReels = data
+          .filter(reel => {
+            const reelDate = new Date(reel.created_at);
+            const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+            return reelDate >= weekAgo;
+          })
+          .sort((a: any, b: any) => {
+            // Sort by engagement score (likes + views)
+            const scoreA = (a.likes_count || 0) + (a.view_count || 0) * 0.1;
+            const scoreB = (b.likes_count || 0) + (b.view_count || 0) * 0.1;
+            return scoreB - scoreA;
+          })
+          .slice(0, limit);
+
+        debug.dbSuccess('reels', 'TRENDING_SELECT', { count: trendingReels.length });
+
+        return trendingReels.map((reel: any) => ({
+          id: reel.id,
+          user: {
+            id: reel.user_id,
+            username: reel.username || '',
+            avatar: reel.avatar || '',
+            bio: reel.bio || '',
+            location: '',
+            age: 0,
+            isHost: false,
+            hourlyRate: 0,
+            totalChats: 0,
+            responseTime: '5 min',
+            isFollowing: false,
+          },
+          videoUrl: reel.video_url,
+          caption: reel.caption || '',
+          hashtags: reel.hashtags || [],
+          likes: reel.likes_count || 0,
+          likesCount: reel.likes_count || 0,
+          comments: reel.comments_count || 0,
+          commentsCount: reel.comments_count || 0,
+          shares: reel.shares_count || 0,
+          sharesCount: reel.shares_count || 0,
+          viewCount: reel.view_count || 0,
+          isLiked: reel.is_liked || false,
+          isSaved: reel.is_saved || false,
+          isViewed: reel.is_viewed || false,
+          isTrending: true, // These are trending by definition
+          duration: reel.duration || 0,
+          location: reel.location || '',
+          thumbnailUrl: reel.thumbnail_url,
+          musicInfo: reel.music_title ? {
+            title: reel.music_title,
+            artist: reel.music_artist || '',
+            coverUrl: reel.music_cover_url || '',
+          } : undefined,
+          createdAt: reel.created_at,
+          timestamp: reel.created_at,
+        }));
+      }
+      */
+
+      // Fallback for unauthenticated users
+      const { data, error } = await supabase
+        .from('reels')
+        .select(`
+          *,
+          user_profiles!reels_user_id_fkey (
+            id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time
+          )
+        `)
+        .order('likes_count', { ascending: false })
+        .order('view_count', { ascending: false })
+        .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()) // Last 7 days
+        .range(offset, offset + limit - 1);
+
+      if (error || !data) {
+        debug.dbError('reels', 'TRENDING_SELECT', error);
+        return [];
+      }
+
+      debug.dbSuccess('reels', 'TRENDING_SELECT', { count: data.length });
+      
+      return data.map(reel => ({
+        id: reel.id,
+        user: {
+          id: reel.user_profiles.id,
+          username: reel.user_profiles.username || reel.user_profiles.handle || '',
+          avatar: reel.user_profiles.avatar || reel.user_profiles.profile_picture || '',
+          bio: reel.user_profiles.bio || '',
+          location: reel.user_profiles.location || '',
+          age: reel.user_profiles.age || 0,
+          isHost: reel.user_profiles.is_host || false,
+          hourlyRate: reel.user_profiles.hourly_rate || 0,
+          totalChats: reel.user_profiles.total_chats || 0,
+          responseTime: reel.user_profiles.response_time || '5 min',
+          isFollowing: false,
+        },
+        videoUrl: reel.video_url,
+        caption: reel.caption || '',
+        hashtags: reel.hashtags || [],
+        likes: reel.likes_count || 0,
+        likesCount: reel.likes_count || 0,
+        comments: reel.comments_count || 0,
+        commentsCount: reel.comments_count || 0,
+        shares: reel.shares_count || 0,
+        sharesCount: reel.shares_count || 0,
+        viewCount: reel.view_count || 0,
+        isLiked: false,
+        isSaved: false,
+        // isViewed: false, // Removed - property doesn't exist in Reel type
+        isTrending: true, // These are trending by definition
+        duration: reel.duration || 0,
+        location: reel.location || '',
+        thumbnailUrl: reel.thumbnail_url,
+        musicInfo: reel.music_title ? {
+          title: reel.music_title,
+          artist: reel.music_artist || '',
+          coverUrl: reel.music_cover_url || '',
+        } : undefined,
+        musicTitle: reel.music_title,
+        musicArtist: reel.music_artist,
+        musicCoverUrl: reel.music_cover_url,
+        timestamp: reel.created_at,
+        createdAt: reel.created_at,
+        updatedAt: reel.updated_at,
+      }));
+    } catch (error) {
+      debug.dbError('reels', 'TRENDING_SELECT', { error: (error as Error).message });
+      return [];
+    }
+  },
+
+  // Get reels by hashtags
+  async getReelsByHashtags(hashtags: string[], limit = 20, offset = 0): Promise<Reel[]> {
+    try {
+      debug.dbQuery('reels', 'HASHTAG_SELECT', { hashtags, limit, offset });
+      
+      const { data, error } = await supabase
+        .from('reels')
+        .select(`
+          *,
+          user_profiles!reels_user_id_fkey (
+            id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time
+          )
+        `)
+        .overlaps('hashtags', hashtags)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (error || !data) {
+        debug.dbError('reels', 'HASHTAG_SELECT', error);
+        return [];
+      }
+
+      debug.dbSuccess('reels', 'HASHTAG_SELECT', { count: data.length, hashtags });
+      
+      return data.map(reel => ({
+        id: reel.id,
+        user: {
+          id: reel.user_profiles.id,
+          username: reel.user_profiles.username || reel.user_profiles.handle || '',
+          avatar: reel.user_profiles.avatar || reel.user_profiles.profile_picture || '',
+          bio: reel.user_profiles.bio || '',
+          location: reel.user_profiles.location || '',
+          age: reel.user_profiles.age || 0,
+          isHost: reel.user_profiles.is_host || false,
+          hourlyRate: reel.user_profiles.hourly_rate || 0,
+          totalChats: reel.user_profiles.total_chats || 0,
+          responseTime: reel.user_profiles.response_time || '5 min',
+          isFollowing: false,
+        },
+        videoUrl: reel.video_url,
+        caption: reel.caption || '',
+        hashtags: reel.hashtags || [],
+        likes: reel.likes_count || 0,
+        likesCount: reel.likes_count || 0,
+        comments: reel.comments_count || 0,
+        commentsCount: reel.comments_count || 0,
+        shares: reel.shares_count || 0,
+        sharesCount: reel.shares_count || 0,
+        viewCount: reel.view_count || 0,
+        isLiked: false,
+        isSaved: false,
+        // isViewed: false, // Removed - property doesn't exist in Reel type
+        isTrending: (reel.likes_count || 0) > 1000 || (reel.view_count || 0) > 10000,
+        duration: reel.duration || 0,
+        location: reel.location || '',
+        thumbnailUrl: reel.thumbnail_url,
+        musicInfo: reel.music_title ? {
+          title: reel.music_title,
+          artist: reel.music_artist || '',
+          coverUrl: reel.music_cover_url || '',
+        } : undefined,
+        musicTitle: reel.music_title,
+        musicArtist: reel.music_artist,
+        musicCoverUrl: reel.music_cover_url,
+        timestamp: reel.created_at,
+        createdAt: reel.created_at,
+        updatedAt: reel.updated_at,
+      }));
+    } catch (error) {
+      debug.dbError('reels', 'HASHTAG_SELECT', { error: (error as Error).message });
+      return [];
+    }
+  },
+
+  // Delete a reel
+  async deleteReel(reelId: string, userId: string): Promise<boolean> {
+    try {
+      debug.dbQuery('reels', 'DELETE', { reelId, userId });
+      
+      // First verify the user owns this reel
+      const { data: reel, error: verifyError } = await supabase
+        .from('reels')
+        .select('user_id')
+        .eq('id', reelId)
+        .eq('user_id', userId)
+        .single();
+
+      if (verifyError || !reel) {
+        debug.dbError('reels', 'DELETE_VERIFY', { error: 'Reel not found or user not authorized' });
+        return false;
+      }
+
+      // Delete the reel (CASCADE will handle related records)
+      const { error: deleteError } = await supabase
+        .from('reels')
+        .delete()
+        .eq('id', reelId)
+        .eq('user_id', userId);
+
+      if (deleteError) {
+        debug.dbError('reels', 'DELETE', deleteError);
+        return false;
+      }
+
+      debug.dbSuccess('reels', 'DELETE', { reelId, userId });
+      return true;
+    } catch (error) {
+      debug.dbError('reels', 'DELETE', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Get reels by user
+  async getReelsByUser(userId: string, limit = 20, offset = 0): Promise<Reel[]> {
+    try {
+      debug.dbQuery('reels', 'USER_SELECT', { userId, limit, offset });
+      
+      const { data, error } = await supabase
+        .from('reels')
+        .select(`
+          *,
+          user_profiles!reels_user_id_fkey (
+            id, full_name, handle, username, avatar, profile_picture, bio, location, age, is_host, hourly_rate, total_chats, response_time
+          )
+        `)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (error || !data) {
+        debug.dbError('reels', 'USER_SELECT', error);
+        return [];
+      }
+
+      debug.dbSuccess('reels', 'USER_SELECT', { count: data.length, userId });
+      
+      return data.map(reel => ({
+        id: reel.id,
+        user: {
+          id: reel.user_profiles.id,
+          username: reel.user_profiles.username || reel.user_profiles.handle || '',
+          avatar: reel.user_profiles.avatar || reel.user_profiles.profile_picture || '',
+          bio: reel.user_profiles.bio || '',
+          location: reel.user_profiles.location || '',
+          age: reel.user_profiles.age || 0,
+          isHost: reel.user_profiles.is_host || false,
+          hourlyRate: reel.user_profiles.hourly_rate || 0,
+          totalChats: reel.user_profiles.total_chats || 0,
+          responseTime: reel.user_profiles.response_time || '5 min',
+          isFollowing: false,
+        },
+        videoUrl: reel.video_url,
+        caption: reel.caption || '',
+        hashtags: reel.hashtags || [],
+        likes: reel.likes_count || 0,
+        likesCount: reel.likes_count || 0,
+        comments: reel.comments_count || 0,
+        commentsCount: reel.comments_count || 0,
+        shares: reel.shares_count || 0,
+        sharesCount: reel.shares_count || 0,
+        viewCount: reel.view_count || 0,
+        isLiked: false,
+        isSaved: false,
+        // isViewed: false, // Removed - property doesn't exist in Reel type
+        isTrending: (reel.likes_count || 0) > 1000 || (reel.view_count || 0) > 10000,
+        duration: reel.duration || 0,
+        location: reel.location || '',
+        thumbnailUrl: reel.thumbnail_url,
+        musicInfo: reel.music_title ? {
+          title: reel.music_title,
+          artist: reel.music_artist || '',
+          coverUrl: reel.music_cover_url || '',
+        } : undefined,
+        musicTitle: reel.music_title,
+        musicArtist: reel.music_artist,
+        musicCoverUrl: reel.music_cover_url,
+        timestamp: reel.created_at,
+        createdAt: reel.created_at,
+        updatedAt: reel.updated_at,
+      }));
+    } catch (error) {
+      debug.dbError('reels', 'USER_SELECT', { error: (error as Error).message });
+      return [];
     }
   },
 };
@@ -1624,20 +2629,34 @@ export const storageService = {
       const startTime = Date.now();
       debug.apiCall('storage', 'uploadImage', { bucket, userId, file: file.name });
       
+      // Validate inputs
+      if (!file.uri || !userId) {
+        throw new Error('Missing required parameters: file.uri or userId');
+      }
+      
+      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
+      
       // Generate unique filename
       const timestamp = Date.now();
       const extension = file.name?.split('.').pop() || 'jpg';
       const folder = options.folder || 'uploads';
       const fileName = `${userId}/${folder}/${timestamp}.${extension}`;
+
+      // Convert file URI to binary data
+      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_READ', `Reading file from: ${file.uri}`);
+      const uint8Array = await readUriToUint8Array(file.uri);
       
-      // Convert URI to blob
-      const response = await fetch(file.uri);
-      const blob = await response.blob();
+      // Validate file size
+      if (uint8Array.byteLength === 0) {
+        throw new Error('File is empty (0 bytes)');
+      }
       
-      // Upload to Supabase storage
+      debugLogger.info('STORAGE', 'UPLOAD_IMAGE_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
+
+      // Upload to Supabase storage using Uint8Array
       const { data, error } = await supabase.storage
         .from(bucket)
-        .upload(fileName, blob, {
+        .upload(fileName, uint8Array, {
           contentType: file.type || 'image/jpeg',
           upsert: true,
         });
@@ -1645,7 +2664,11 @@ export const storageService = {
       if (error) {
         debug.apiError('storage', 'uploadImage', error);
         debugLogger.error('STORAGE', 'UPLOAD_IMAGE', 'Image upload failed', error);
-        return null;
+        throw error;
+      }
+
+      if (!data) {
+        throw new Error('No data returned from upload');
       }
 
       // Get public URL
@@ -1654,7 +2677,7 @@ export const storageService = {
         .getPublicUrl(fileName);
 
       debug.apiSuccess('storage', 'uploadImage', { url: publicUrl, path: fileName }, Date.now() - startTime);
-      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Image uploaded successfully: ${publicUrl}`);
+      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Image uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
       
       return { url: publicUrl, path: fileName };
     } catch (error) {
@@ -1677,20 +2700,34 @@ export const storageService = {
       const startTime = Date.now();
       debug.apiCall('storage', 'uploadVideo', { bucket, userId, file: file.name });
       
+      // Validate inputs
+      if (!file.uri || !userId) {
+        throw new Error('Missing required parameters: file.uri or userId');
+      }
+      
+      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_START', `Starting upload: ${file.name || 'unnamed'} to ${bucket}`);
+      
       // Generate unique filename
       const timestamp = Date.now();
       const extension = file.name?.split('.').pop() || 'mp4';
       const folder = options.folder || 'videos';
       const fileName = `${userId}/${folder}/${timestamp}.${extension}`;
+
+      // Convert file URI to binary data
+      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_READ', `Reading file from: ${file.uri}`);
+      const uint8Array = await readUriToUint8Array(file.uri);
       
-      // Convert URI to blob
-      const response = await fetch(file.uri);
-      const blob = await response.blob();
+      // Validate file size
+      if (uint8Array.byteLength === 0) {
+        throw new Error('Video file is empty (0 bytes)');
+      }
       
-      // Upload to Supabase storage
+      debugLogger.info('STORAGE', 'UPLOAD_VIDEO_READY', `File read successfully: ${uint8Array.byteLength} bytes`);
+
+      // Upload using Uint8Array to avoid 0-byte issues on native
       const { data, error } = await supabase.storage
         .from(bucket)
-        .upload(fileName, blob, {
+        .upload(fileName, uint8Array, {
           contentType: file.type || 'video/mp4',
           upsert: true,
         });
@@ -1698,7 +2735,11 @@ export const storageService = {
       if (error) {
         debug.apiError('storage', 'uploadVideo', error);
         debugLogger.error('STORAGE', 'UPLOAD_VIDEO', 'Video upload failed', error);
-        return null;
+        throw error;
+      }
+
+      if (!data) {
+        throw new Error('No data returned from video upload');
       }
 
       // Get public URL
@@ -1707,7 +2748,7 @@ export const storageService = {
         .getPublicUrl(fileName);
 
       debug.apiSuccess('storage', 'uploadVideo', { url: publicUrl, path: fileName }, Date.now() - startTime);
-      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Video uploaded successfully: ${publicUrl}`);
+      debugLogger.info('STORAGE', 'UPLOAD_SUCCESS', `Video uploaded successfully: ${publicUrl} (${uint8Array.byteLength} bytes)`);
       
       return { url: publicUrl, path: fileName };
     } catch (error) {
@@ -1835,19 +2876,34 @@ const formatTimestamp = (timestamp: string): string => {
 
 export const commentService = {
   // Get comments for a post
-  async getComments(postId: string): Promise<Comment[]> {
+  async getComments(postId: string, postType: 'feed' | 'reel' = 'feed'): Promise<Comment[]> {
     try {
       const startTime = Date.now();
       debug.dbQuery('comments', 'SELECT', { postId });
       
-      // First try the view, if it doesn't exist, fall back to direct table query
-      let { data, error } = await supabase
-        .from('comments_with_users')
-        .select('*')
-        .eq('post_id', postId)
-        .order('created_at', { ascending: true });
+      let data, error;
+      
+      // Use specific reel comment function for reels
+      if (postType === 'reel') {
+        const result = await supabase.rpc('get_reel_comments', {
+          p_reel_id: postId,
+          p_limit: 50,
+          p_offset: 0
+        });
+        data = result.data;
+        error = result.error;
+      } else {
+        // For posts, try the view first, if it doesn't exist, fall back to direct table query
+        const result = await supabase
+          .from('comments_with_users')
+          .select('*')
+          .eq('post_id', postId)
+          .order('created_at', { ascending: true });
+        data = result.data;
+        error = result.error;
+      }
 
-      if (error && error.code === '42P01') {
+      if (error && error.code === '42P01' && postType === 'feed') {
         // View doesn't exist, use direct table query
         console.log('comments_with_users view not found, using direct table query');
         const { data: commentsData, error: commentsError } = await supabase
@@ -1882,6 +2938,7 @@ export const commentService = {
         return {
           id: comment.id,
           postId: comment.post_id,
+          postType: postType,
           userId: comment.user_id,
           user: {
             id: userData.id,
@@ -1891,7 +2948,7 @@ export const commentService = {
           content: comment.content,
           parentId: comment.parent_id,
           likesCount: comment.likes_count,
-          isLiked: comment.is_liked_by_current_user || false,
+          isLiked: comment.is_liked_by_current_user || comment.is_liked || false,
           createdAt: comment.created_at,
           updatedAt: comment.updated_at
         };
@@ -1906,7 +2963,7 @@ export const commentService = {
   },
 
   // Add a new comment
-  async addComment(postId: string, content: string, parentId?: string): Promise<Comment | null> {
+  async addComment(postId: string, content: string, parentId?: string, postType: 'feed' | 'reel' = 'feed'): Promise<Comment | null> {
     try {
       const startTime = Date.now();
       const { data: { user } } = await supabase.auth.getUser();
@@ -1914,19 +2971,57 @@ export const commentService = {
 
       debug.dbQuery('comments', 'INSERT', { postId, content, parentId, userId: user.id });
 
-      const { data, error } = await supabase
-        .from('comments')
-        .insert({
-          post_id: postId,
-          user_id: user.id,
-          content,
-          parent_id: parentId
-        })
-        .select(`
-          *,
-          user:user_profiles(id, username, avatar)
-        `)
-        .single();
+      let data, error;
+      
+      // Use specific reel comment function for reels
+      if (postType === 'reel') {
+        const result = await supabase.rpc('add_reel_comment', {
+          p_reel_id: postId,
+          p_content: content.trim(),
+          p_parent_id: parentId || null,
+        });
+        
+        if (result.error) {
+          error = result.error;
+        } else if (result.data && result.data.length > 0) {
+          // Transform the RPC result to match expected format
+          const rpcData = result.data[0];
+          data = {
+            id: rpcData.id,
+            post_id: rpcData.post_id,
+            user_id: rpcData.user_id,
+            content: rpcData.content,
+            parent_id: rpcData.parent_id,
+            likes_count: rpcData.likes_count || 0,
+            created_at: rpcData.created_at,
+            updated_at: rpcData.updated_at,
+            user: {
+              id: rpcData.user_id,
+              username: rpcData.username,
+              avatar: rpcData.avatar
+            }
+          };
+        }
+      } else {
+        // Use regular insert for posts
+        const result = await supabase
+          .from('comments')
+          .insert({
+            post_id: postId,
+            user_id: user.id,
+            content,
+            parent_id: parentId,
+            post_type: 'feed'
+          })
+          .select(`
+            *,
+            user:user_profiles(id, username, avatar)
+          `)
+          .single();
+          
+        data = result.data;
+        error = result.error;
+      }
 
       if (error) {
         debug.dbError('comments', 'INSERT', error);
@@ -2116,6 +3211,1212 @@ export const commentService = {
 };
 
 // =====================================================
+// MESSAGE OPERATIONS
+// =====================================================
+
+export const messageService = {
+  // Get conversations for a user
+  async getConversations(userId: string): Promise<Conversation[]> {
+    try {
+      const startTime = Date.now();
+      debug.dbQuery('conversations', 'SELECT', { userId });
+      debugLogger.info('MESSAGE', 'GET_CONVERSATIONS_START', `Fetching conversations for user: ${userId}`);
+
+      // First, get conversations where user is a participant
+      const { data: userConversations, error: userConvError } = await supabase
+        .from('conversation_participants')
+        .select('conversation_id')
+        .eq('user_id', userId);
+
+      if (userConvError || !userConversations || userConversations.length === 0) {
+        debug.dbError('conversation_participants', 'SELECT', userConvError);
+        debugLogger.info('MESSAGE', 'GET_CONVERSATIONS_EMPTY', 'No conversations found for user');
+        return [];
+      }
+
+      const conversationIds = userConversations.map(cp => cp.conversation_id);
+
+      // Then get full conversation data with ALL participants
+      const { data, error } = await supabase
+        .from('conversations')
+        .select(`
+          id, conversation_type, created_by, created_at, updated_at,
+          conversation_participants(
+            user_id,
+            user_profiles!conversation_participants_user_id_fkey(
+              id, username, handle, full_name, avatar, profile_picture, is_online, last_seen
+            )
+          ),
+          messages(
+            id, content, created_at, sender_id, is_read, message_type,
+            user_profiles!messages_sender_id_fkey(username, avatar)
+          )
+        `)
+        .in('id', conversationIds)
+        .order('updated_at', { ascending: false });
+
+      if (error) {
+        debug.dbError('conversations', 'SELECT', error);
+        debugLogger.error('MESSAGE', 'GET_CONVERSATIONS_ERROR', 'Failed to fetch conversations', error);
+        return [];
+      }
+
+      if (!data || data.length === 0) {
+        debugLogger.info('MESSAGE', 'GET_CONVERSATIONS_EMPTY', 'No conversations found');
+        return [];
+      }
+
+      const conversations: Conversation[] = data.map((conv: any) => {
+        // Get the other participant (not the current user)
+        const otherParticipants = conv.conversation_participants
+          .filter((p: any) => p.user_id !== userId)
+          .map((p: any) => ({
+            id: p.user_profiles.id,
+            username: p.user_profiles.username || p.user_profiles.handle || '',
+            avatar: p.user_profiles.avatar || p.user_profiles.profile_picture || 'https://images.pexels.com/photos/774909/pexels-photo-774909.jpeg?auto=compress&cs=tinysrgb&w=150',
+            fullName: p.user_profiles.full_name || '',
+            isOnline: p.user_profiles.is_online || false,
+            lastSeen: p.user_profiles.last_seen || '',
+          }));
+
+        // Get the latest message
+        const latestMessage = conv.messages && conv.messages.length > 0 
+          ? conv.messages.reduce((latest: any, msg: any) => 
+              new Date(msg.created_at) > new Date(latest.created_at) ? msg : latest
+            )
+          : null;
+
+        // Count unread messages
+        const unreadCount = conv.messages 
+          ? conv.messages.filter((msg: any) => 
+              msg.sender_id !== userId && !msg.is_read
+            ).length 
+          : 0;
+
+        return {
+          id: conv.id,
+          participants: otherParticipants,
+          lastMessage: latestMessage ? {
+            id: latestMessage.id,
+            senderId: latestMessage.sender_id,
+            receiverId: userId,
+            content: latestMessage.content,
+            type: latestMessage.type || 'text',
+            timestamp: latestMessage.created_at,
+            conversationId: conv.id,
+            isRead: latestMessage.is_read,
+            createdAt: latestMessage.created_at,
+          } : {
+            id: '',
+            senderId: '',
+            receiverId: userId,
+            content: 'No messages yet',
+            type: 'text' as const,
+            timestamp: conv.created_at,
+            conversationId: conv.id,
+            isRead: true,
+            createdAt: conv.created_at,
+          },
+          unreadCount,
+          createdAt: conv.created_at,
+          updatedAt: conv.updated_at,
+        };
+      });
+
+      debug.dbSuccess('conversations', 'SELECT', { userId, count: conversations.length }, Date.now() - startTime);
+      debugLogger.success('MESSAGE', 'GET_CONVERSATIONS_SUCCESS', `Fetched ${conversations.length} conversations`, { userId });
+      
+      return conversations;
+    } catch (error) {
+      debugLogger.error('MESSAGE', 'GET_CONVERSATIONS_EXCEPTION', 'Exception occurred while fetching conversations', error);
+      return [];
+    }
+  },
+
+  // Get messages for a conversation
+  async getMessages(conversationId: string, userId: string): Promise<Message[]> {
+    try {
+      const startTime = Date.now();
+      debug.dbQuery('messages', 'SELECT', { conversationId });
+      debugLogger.info('MESSAGE', 'GET_MESSAGES_START', `Fetching messages for conversation: ${conversationId}`);
+
+      const { data, error } = await supabase
+        .from('messages')
+        .select(`
+          *,
+          user_profiles!messages_sender_id_fkey(
+            id, username, handle, avatar, profile_picture
+          ),
+          reels!messages_shared_reel_id_fkey(
+            id, video_url, thumbnail_url, caption, likes_count, comments_count, shares_count,
+            user_profiles!reels_user_id_fkey(id, username, avatar)
+          ),
+          posts!messages_shared_post_id_fkey(
+            id, image_url, content, likes_count, comments_count,
+            user_profiles!posts_user_id_fkey(id, username, avatar)
+          ),
+          stories!messages_shared_story_id_fkey(
+            id, image_url, video_url, media_type, expires_at, created_at,
+            user_profiles!stories_user_id_fkey(id, username, avatar)
+          )
+        `)
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        debug.dbError('messages', 'SELECT', error);
+        debugLogger.error('MESSAGE', 'GET_MESSAGES_ERROR', 'Failed to fetch messages', error);
+        return [];
+      }
+
+      if (!data) {
+        debugLogger.info('MESSAGE', 'GET_MESSAGES_EMPTY', 'No messages found');
+        return [];
+      }
+
+      console.error('🚨🚨🚨 ABOUT TO MAP MESSAGES - data.length:', data.length);
+      console.error('🚨🚨🚨 SAMPLE MESSAGE DATA:', data.length > 0 ? JSON.stringify(data[0], null, 2) : 'NO DATA');
+
+      const messages: Message[] = data.map((msg: any, index: number) => {
+        // Add debugging for shared content - VERY VISIBLE LOGS
+        console.error('🔍🔍🔍 MESSAGE_MAPPING #' + index + ' - Message:', {
+          id: msg.id,
+          type: msg.message_type,
+          content: msg.content,
+          shared_reel_id: msg.shared_reel_id,
+          reels: msg.reels,
+          shared_post_id: msg.shared_post_id,
+          posts: msg.posts,
+          shared_story_id: msg.shared_story_id,
+          stories: msg.stories
+        });
+
+        return {
+          id: msg.id,
+          senderId: msg.sender_id,
+          receiverId: userId,
+          content: msg.content,
+          type: msg.message_type || msg.type || 'text',
+          mediaUrl: msg.media_url,
+          timestamp: msg.created_at,
+          conversationId: msg.conversation_id,
+          isRead: msg.is_read,
+          createdAt: msg.created_at,
+          // Map shared reel data
+          sharedReel: (() => {
+            console.error('🔍🔍🔍 REEL_MAPPING - msg.reels exists?', !!msg.reels, 'raw reels:', msg.reels);
+            return msg.reels ? {
+            id: msg.reels.id,
+            videoUrl: msg.reels.video_url,
+            thumbnailUrl: msg.reels.thumbnail_url,
+            caption: msg.reels.caption || '',
+            hashtags: [],
+            likes: msg.reels.likes_count || 0,
+            comments: msg.reels.comments_count || 0,
+            shares: msg.reels.shares_count || 0,
+            isLiked: false,
+            isSaved: false,
+            duration: 0,
+            timestamp: msg.reels.created_at || new Date().toISOString(),
+            user: msg.reels.user_profiles ? {
+              id: msg.reels.user_profiles.id,
+              username: msg.reels.user_profiles.username,
+              avatar: msg.reels.user_profiles.avatar,
+              email: '',
+              handle: msg.reels.user_profiles.username,
+              fullName: msg.reels.user_profiles.username,
+              bio: '',
+              location: '',
+              website: '',
+              followers: 0,
+              following: 0,
+              posts: 0,
+              isFollowing: false,
+              isPrivate: false,
+              isVerified: false,
+              createdAt: new Date().toISOString()
+            } : {
+              id: '',
+              username: 'Unknown',
+              avatar: '',
+              email: '',
+              handle: 'unknown',
+              fullName: 'Unknown User',
+              bio: '',
+              location: '',
+              website: '',
+              followers: 0,
+              following: 0,
+              posts: 0,
+              isFollowing: false,
+              isPrivate: false,
+              isVerified: false,
+              createdAt: new Date().toISOString()
+            }
+          } : undefined;
+          })(),
+          // Map shared post data
+          sharedPost: msg.posts ? {
+            id: msg.posts.id,
+            content: msg.posts.content || '',
+            image: msg.posts.image_url,
+            likes: msg.posts.likes_count || 0,
+            comments: msg.posts.comments_count || 0,
+            isLiked: false,
+            isTrending: false,
+            timestamp: msg.posts.created_at || new Date().toISOString(),
+            user: msg.posts.user_profiles ? {
+              id: msg.posts.user_profiles.id,
+              username: msg.posts.user_profiles.username,
+              avatar: msg.posts.user_profiles.avatar,
+              email: '',
+              handle: msg.posts.user_profiles.username,
+              fullName: msg.posts.user_profiles.username,
+              bio: '',
+              location: '',
+              website: '',
+              followers: 0,
+              following: 0,
+              posts: 0,
+              isFollowing: false,
+              isPrivate: false,
+              isVerified: false,
+              createdAt: new Date().toISOString()
+            } : {
+              id: '',
+              username: 'Unknown',
+              avatar: '',
+              email: '',
+              handle: 'unknown',
+              fullName: 'Unknown User',
+              bio: '',
+              location: '',
+              website: '',
+              followers: 0,
+              following: 0,
+              posts: 0,
+              isFollowing: false,
+              isPrivate: false,
+              isVerified: false,
+              createdAt: new Date().toISOString()
+            }
+          } : undefined,
+          // Map shared story data
+          sharedStory: (() => {
+            console.error('🔍🔍🔍 STORY_MAPPING - msg.stories exists?', !!msg.stories, 'raw stories:', msg.stories);
+            return msg.stories ? {
+              id: msg.stories.id,
+              image: msg.stories.image_url,
+              imageUrl: msg.stories.image_url,
+              videoUrl: msg.stories.video_url,
+              video: msg.stories.video_url,
+              mediaType: msg.stories.media_type || 'image',
+              expiresAt: msg.stories.expires_at,
+              expires_at: msg.stories.expires_at,
+              createdAt: msg.stories.created_at,
+              user: msg.stories.user_profiles ? {
+                id: msg.stories.user_profiles.id,
+                username: msg.stories.user_profiles.username,
+                avatar: msg.stories.user_profiles.avatar,
+                email: '',
+                handle: msg.stories.user_profiles.username,
+                fullName: msg.stories.user_profiles.username,
+                bio: '',
+                location: '',
+                website: '',
+                followers: 0,
+                following: 0,
+                posts: 0,
+                isFollowing: false,
+                isPrivate: false,
+                isVerified: false,
+                createdAt: new Date().toISOString()
+              } : {
+                id: '',
+                username: 'Unknown',
+                avatar: '',
+                email: '',
+                handle: 'unknown',
+                fullName: 'Unknown User',
+                bio: '',
+                location: '',
+                website: '',
+                followers: 0,
+                following: 0,
+                posts: 0,
+                isFollowing: false,
+                isPrivate: false,
+                isVerified: false,
+                createdAt: new Date().toISOString()
+              }
+            } : undefined;
+          })(),
+        };
+      });
+
+      debug.dbSuccess('messages', 'SELECT', { conversationId, count: messages.length }, Date.now() - startTime);
+      debugLogger.success('MESSAGE', 'GET_MESSAGES_SUCCESS', `Fetched ${messages.length} messages`, { conversationId });
+      
+      return messages;
+    } catch (error) {
+      debugLogger.error('MESSAGE', 'GET_MESSAGES_EXCEPTION', 'Exception occurred while fetching messages', error);
+      return [];
+    }
+  },
+
+  // Send a new message
+  async sendMessage(conversationId: string, senderId: string, content: string, messageType: string = 'text', sharedPost?: Post, sharedReel?: Reel, sharedStory?: any, mediaUrl?: string): Promise<Message | null> {
+    try {
+      const startTime = Date.now();
+      debug.userAction('Send message', { conversationId, senderId, messageType });
+      debugLogger.info('MESSAGE', 'SEND_MESSAGE_START', `Sending message`, { conversationId, senderId, contentLength: content.length });
+
+      // First, try with message_type column
+      let data, error;
+      
+      try {
+        const insertData: any = {
+          conversation_id: conversationId,
+          sender_id: senderId,
+          content,
+          message_type: messageType,
+        };
+
+        // Add media URL if provided
+        if (mediaUrl) {
+          insertData.media_url = mediaUrl;
+        }
+
+        // Add shared content if provided
+        if (sharedPost) {
+          console.error('🚨🚨🚨 SEND_MESSAGE - Setting shared_post_id:', sharedPost.id, 'full post:', sharedPost);
+          insertData.shared_post_id = sharedPost.id;
+        }
+        if (sharedReel) {
+          console.error('🚨🚨🚨 SEND_MESSAGE - Setting shared_reel_id:', sharedReel.id, 'full reel:', sharedReel);
+          insertData.shared_reel_id = sharedReel.id;
+        }
+        if (sharedStory) {
+          console.log('📖 SEND_MESSAGE - Setting shared_story_id:', sharedStory.id);
+          insertData.shared_story_id = sharedStory.id;
+        }
+
+        console.log('📤 SEND_MESSAGE - About to insert message with type:', insertData.message_type);
+        
+        const result = await supabase
+          .from('messages')
+          .insert(insertData)
+          .select(`
+            *,
+            user_profiles!messages_sender_id_fkey(
+              id, username, handle, avatar, profile_picture
+            ),
+            reels!messages_shared_reel_id_fkey(
+              id, video_url, thumbnail_url, caption, likes_count, comments_count, shares_count,
+              user_profiles!reels_user_id_fkey(id, username, avatar)
+            ),
+            posts!messages_shared_post_id_fkey(
+              id, image_url, content, likes_count, comments_count,
+              user_profiles!posts_user_id_fkey(id, username, avatar)
+            ),
+            stories!messages_shared_story_id_fkey(
+              id, image_url, video_url, media_type, expires_at, created_at,
+              user_profiles!stories_user_id_fkey(id, username, avatar)
+            )
+          `)
+          .single();
+          
+        console.log('✅ SEND_MESSAGE - Insert result:', result.error ? 'Failed' : 'Success');
+        
+        data = result.data;
+        error = result.error;
+      } catch (insertError: any) {
+        // If message_type column doesn't exist, try without it
+        if (insertError?.message?.includes('message_type') || (error && error.message?.includes('message_type'))) {
+          debugLogger.warn('MESSAGE', 'FALLBACK_INSERT', 'Trying insert without message_type column');
+          
+          const fallbackInsertData: any = {
+            conversation_id: conversationId,
+            sender_id: senderId,
+            content,
+          };
+
+          // Add shared content if provided (fallback case)
+          if (sharedPost) {
+            fallbackInsertData.shared_post_id = sharedPost.id;
+          }
+          if (sharedReel) {
+            fallbackInsertData.shared_reel_id = sharedReel.id;
+          }
+          if (sharedStory) {
+            fallbackInsertData.shared_story_id = sharedStory.id;
+          }
+
+          const fallbackResult = await supabase
+            .from('messages')
+            .insert(fallbackInsertData)
+            .select(`
+              *,
+              user_profiles!messages_sender_id_fkey(
+                id, username, handle, avatar, profile_picture
+              )
+            `)
+            .single();
+            
+          data = fallbackResult.data;
+          error = fallbackResult.error;
+        } else {
+          throw insertError;
+        }
+      }
+
+      if (error) {
+        debug.dbError('messages', 'INSERT', error);
+        debugLogger.error('MESSAGE', 'SEND_MESSAGE_ERROR', 'Failed to send message', error);
+        return null;
+      }
+
+      // Update conversation timestamp
+      await supabase
+        .from('conversations')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', conversationId);
+
+      const message: Message = {
+        id: data.id,
+        senderId: data.sender_id,
+        receiverId: '', // Will be filled by the recipient
+        content: data.content,
+        timestamp: data.created_at,
+        conversationId: data.conversation_id,
+        isRead: data.is_read,
+        createdAt: data.created_at,
+        type: messageType as any,
+        sharedPost: sharedPost,
+        sharedReel: sharedReel,
+        sharedStory: sharedStory,
+      };
+
+      debug.dbSuccess('messages', 'INSERT', { conversationId, messageId: data.id }, Date.now() - startTime);
+      debugLogger.success('MESSAGE', 'SEND_MESSAGE_SUCCESS', `Message sent successfully`, { messageId: data.id });
+      
+      return message;
+    } catch (error) {
+      debugLogger.error('MESSAGE', 'SEND_MESSAGE_EXCEPTION', 'Exception occurred while sending message', error);
+      return null;
+    }
+  },
+
+  // Find existing conversation with a specific user
+  async findConversationWithUser(currentUserId: string, otherUserId: string): Promise<string | null> {
+    try {
+      debugLogger.info('MESSAGE', 'FIND_CONVERSATION_START', `Looking for conversation between users`, { currentUserId, otherUserId });
+
+      // Use the existing RPC function to find direct conversations
+      const { data: existingConv, error: checkError } = await supabase
+        .rpc('find_direct_conversation', {
+          user1_id: currentUserId,
+          user2_id: otherUserId
+        });
+
+      if (checkError) {
+        debugLogger.warn('MESSAGE', 'FIND_CONVERSATION_ERROR', 'Error checking existing conversation', checkError);
+        return null;
+      }
+
+      if (existingConv && existingConv.length > 0) {
+        debugLogger.success('MESSAGE', 'FIND_CONVERSATION_SUCCESS', 'Found existing conversation', { conversationId: existingConv[0].id });
+        return existingConv[0].id;
+      }
+
+      debugLogger.info('MESSAGE', 'FIND_CONVERSATION_NONE', 'No existing conversation found');
+      return null;
+    } catch (error) {
+      debugLogger.error('MESSAGE', 'FIND_CONVERSATION_EXCEPTION', 'Exception occurred while finding conversation', error);
+      return null;
+    }
+  },
+
+  // Create a new conversation
+  async createConversation(participants: string[] | any): Promise<string | null> {
+    try {
+      const startTime = Date.now();
+      debug.userAction('Create conversation', { participants });
+      
+      // Handle different input formats
+      let participantArray: string[] = [];
+      
+      if (Array.isArray(participants)) {
+        // Direct array input
+        participantArray = participants;
+      } else if (participants && typeof participants === 'object') {
+        // Handle object format like { participants: [...], createdBy: "..." }
+        if (participants.participants && Array.isArray(participants.participants)) {
+          participantArray = participants.participants;
+        } else if (participants.createdBy) {
+          // If only createdBy is provided, use it as the only participant
+          participantArray = [participants.createdBy];
+        } else {
+          // Try to extract any array-like properties
+          const keys = Object.keys(participants);
+          for (const key of keys) {
+            if (Array.isArray(participants[key])) {
+              participantArray = participants[key];
+              break;
+            }
+          }
+        }
+      } else if (typeof participants === 'string') {
+        // Single string input
+        participantArray = [participants];
+      }
+      
+      debugLogger.info('MESSAGE', 'CREATE_CONVERSATION_START', `Creating conversation`, { 
+        participantCount: participantArray.length,
+        participants: participantArray,
+        originalInput: participants
+      });
+
+      // Validate input
+      if (!participantArray || participantArray.length === 0) {
+        debugLogger.error('MESSAGE', 'CREATE_CONVERSATION_ERROR', 'No valid participants found', { 
+          originalInput: participants,
+          processedArray: participantArray 
+        });
+        return null;
+      }
+
+      // Remove duplicates and validate UUIDs
+      const uniqueParticipants = [...new Set(participantArray)].filter(p => {
+        const isValid = p && typeof p === 'string' && p.length > 0;
+        if (!isValid) {
+          debugLogger.warn('MESSAGE', 'INVALID_PARTICIPANT', `Invalid participant: ${p}`);
+        }
+        return isValid;
+      });
+
+      if (uniqueParticipants.length === 0) {
+        debugLogger.error('MESSAGE', 'CREATE_CONVERSATION_ERROR', 'No valid participants after filtering');
+        return null;
+      }
+
+      debugLogger.info('MESSAGE', 'PARTICIPANTS_VALIDATED', `Valid participants: ${uniqueParticipants.length}`);
+
+      // Check if conversation already exists between these participants (for direct messages only)
+      if (uniqueParticipants.length === 2) {
+        try {
+          const { data: existingConv, error: checkError } = await supabase
+            .rpc('find_direct_conversation', {
+              user1_id: uniqueParticipants[0],
+              user2_id: uniqueParticipants[1]
+            });
+
+          if (checkError) {
+            debugLogger.warn('MESSAGE', 'CHECK_EXISTING_ERROR', 'Error checking existing conversation', checkError);
+            // Continue with creation even if check fails
+          } else if (existingConv && existingConv.length > 0) {
+            debugLogger.info('MESSAGE', 'CONVERSATION_EXISTS', 'Conversation already exists', { conversationId: existingConv[0].id });
+            return existingConv[0].id;
+          }
+        } catch (rpcError) {
+          debugLogger.warn('MESSAGE', 'RPC_CHECK_FAILED', 'RPC check failed, continuing with creation', rpcError);
+          // Continue with creation
+        }
+      }
+
+      // Prepare conversation data
+      const conversationData: any = {
+        conversation_type: uniqueParticipants.length === 2 ? 'direct' : 'group',
+      };
+
+      // Note: title column was removed from database, so we don't add it
+      // Group chats will be identified by conversation_type = 'group'
+
+      // Add created_by if we have a current user (first participant is usually the creator)
+      if (uniqueParticipants.length > 0) {
+        conversationData.created_by = uniqueParticipants[0];
+      }
+
+      debugLogger.info('MESSAGE', 'CREATING_CONVERSATION', 'About to create conversation', conversationData);
+
+      // Create new conversation
+      const { data: conversation, error: convError } = await supabase
+        .from('conversations')
+        .insert(conversationData)
+        .select()
+        .single();
+
+      if (convError) {
+        debug.dbError('conversations', 'INSERT', convError);
+        debugLogger.error('MESSAGE', 'CREATE_CONVERSATION_ERROR', 'Failed to create conversation', {
+          error: convError,
+          data: conversationData,
+          message: convError.message,
+          details: convError.details,
+          hint: convError.hint
+        });
+        return null;
+      }
+
+      if (!conversation || !conversation.id) {
+        debugLogger.error('MESSAGE', 'CREATE_CONVERSATION_ERROR', 'Conversation created but no ID returned');
+        return null;
+      }
+
+      debugLogger.info('MESSAGE', 'CONVERSATION_CREATED', 'Conversation created successfully', { 
+        conversationId: conversation.id 
+      });
+
+      // Add participants
+      const participantData = uniqueParticipants.map(userId => ({
+        conversation_id: conversation.id,
+        user_id: userId,
+      }));
+
+      debugLogger.info('MESSAGE', 'ADDING_PARTICIPANTS', 'About to add participants', { 
+        count: participantData.length,
+        conversationId: conversation.id
+      });
+
+      console.log('🔧 Adding participants to conversation:', conversation.id);
+      console.log('👥 Participants to add:', uniqueParticipants);
+      console.log('📝 Participant data:', participantData);
+      
+      const { data: insertedParticipants, error: participantError } = await supabase
+        .from('conversation_participants')
+        .insert(participantData)
+        .select('*');
+
+      if (participantError) {
+        debug.dbError('conversation_participants', 'INSERT', participantError);
+        debugLogger.error('MESSAGE', 'ADD_PARTICIPANTS_ERROR', 'Failed to add participants', {
+          error: participantError,
+          data: participantData,
+          message: participantError.message,
+          details: participantError.details,
+          hint: participantError.hint
+        });
+        
+        // Try to clean up the conversation if participants failed
+        try {
+          await supabase.from('conversations').delete().eq('id', conversation.id);
+          debugLogger.info('MESSAGE', 'CLEANUP_SUCCESS', 'Cleaned up conversation after participant error');
+        } catch (cleanupError) {
+          debugLogger.error('MESSAGE', 'CLEANUP_FAILED', 'Failed to cleanup conversation', cleanupError);
+        }
+        
+        return null;
+      }
+
+      console.log('✅ Participants added successfully:', insertedParticipants);
+      
+      debug.dbSuccess('conversations', 'CREATE', { conversationId: conversation.id }, Date.now() - startTime);
+      debugLogger.success('MESSAGE', 'CREATE_CONVERSATION_SUCCESS', `Conversation created successfully`, { 
+        conversationId: conversation.id,
+        participantCount: uniqueParticipants.length,
+        type: conversationData.conversation_type
+      });
+      
+      return conversation.id;
+    } catch (error: any) {
+      debugLogger.error('MESSAGE', 'CREATE_CONVERSATION_EXCEPTION', 'Exception occurred while creating conversation', {
+        error: error,
+        message: error?.message,
+        stack: error?.stack,
+        originalInput: participants,
+        errorType: error?.constructor?.name
+      });
+      return null;
+    }
+  },
+
+  // Mark messages as read
+  async markAsRead(conversationId: string, userId: string): Promise<boolean> {
+    try {
+      const startTime = Date.now();
+      debug.userAction('Mark messages as read', { conversationId, userId });
+      debugLogger.info('MESSAGE', 'MARK_READ_START', `Marking messages as read`, { conversationId, userId });
+
+      const { error } = await supabase
+        .from('messages')
+        .update({ is_read: true })
+        .eq('conversation_id', conversationId)
+        .neq('sender_id', userId)
+        .eq('is_read', false);
+
+      if (error) {
+        debug.dbError('messages', 'UPDATE', error);
+        debugLogger.error('MESSAGE', 'MARK_READ_ERROR', 'Failed to mark messages as read', error);
+        return false;
+      }
+
+      debug.dbSuccess('messages', 'UPDATE', { conversationId }, Date.now() - startTime);
+      debugLogger.success('MESSAGE', 'MARK_READ_SUCCESS', `Messages marked as read`, { conversationId });
+      
+      return true;
+    } catch (error) {
+      debugLogger.error('MESSAGE', 'MARK_READ_EXCEPTION', 'Exception occurred while marking messages as read', error);
+      return false;
+    }
+  },
+
+
+
+  // Get conversation participants
+  async getConversationParticipants(conversationId: string): Promise<User[]> {
+    try {
+      const startTime = Date.now();
+      debug.dbQuery('conversation_participants', 'SELECT', { conversationId });
+      debugLogger.info('MESSAGE', 'GET_PARTICIPANTS_START', `Fetching participants`, { conversationId });
+
+      const { data, error } = await supabase
+        .from('conversation_participants')
+        .select(`
+          user_profiles!conversation_participants_user_id_fkey(
+            id, username, handle, full_name, avatar, profile_picture, 
+            bio, location, age, is_host, is_online, last_seen
+          )
+        `)
+        .eq('conversation_id', conversationId);
+
+      if (error) {
+        debug.dbError('conversation_participants', 'SELECT', error);
+        debugLogger.error('MESSAGE', 'GET_PARTICIPANTS_ERROR', 'Failed to fetch participants', error);
+        return [];
+      }
+
+      if (!data) return [];
+
+      const participants: User[] = data.map((p: any) => ({
+        id: p.user_profiles.id,
+        username: p.user_profiles.username || p.user_profiles.handle || '',
+        avatar: p.user_profiles.avatar || p.user_profiles.profile_picture || '',
+        fullName: p.user_profiles.full_name || '',
+        bio: p.user_profiles.bio || '',
+        location: p.user_profiles.location || '',
+        age: p.user_profiles.age || 0,
+        isHost: p.user_profiles.is_host || false,
+        isOnline: p.user_profiles.is_online || false,
+        lastSeen: p.user_profiles.last_seen || '',
+      }));
+
+      debug.dbSuccess('conversation_participants', 'SELECT', { conversationId, count: participants.length }, Date.now() - startTime);
+      debugLogger.success('MESSAGE', 'GET_PARTICIPANTS_SUCCESS', `Fetched ${participants.length} participants`, { conversationId });
+      
+      return participants;
+    } catch (error) {
+      debugLogger.error('MESSAGE', 'GET_PARTICIPANTS_EXCEPTION', 'Exception occurred while fetching participants', error);
+      return [];
+    }
+  },
+
+  // Search conversations
+  async searchConversations(userId: string, query: string): Promise<Conversation[]> {
+    try {
+      const startTime = Date.now();
+      debug.searchStart('conversations', { userId, query });
+      debugLogger.info('MESSAGE', 'SEARCH_CONVERSATIONS_START', `Searching conversations`, { userId, query });
+
+      const { data, error } = await supabase
+        .from('conversations')
+        .select(`
+          *,
+          conversation_participants!inner(
+            user_id,
+            user_profiles!conversation_participants_user_id_fkey(
+              id, username, handle, full_name, avatar, profile_picture
+            )
+          ),
+          messages(id, content, created_at, sender_id, is_read)
+        `)
+        .eq('conversation_participants.user_id', userId)
+        .ilike('conversation_participants.user_profiles.username', `%${query}%`)
+        .order('updated_at', { ascending: false });
+
+      if (error) {
+        debug.searchError('conversations', error);
+        debugLogger.error('MESSAGE', 'SEARCH_CONVERSATIONS_ERROR', 'Failed to search conversations', error);
+        return [];
+      }
+
+      // Format the data similar to getConversations
+      const conversations = data?.map((conv: any) => {
+        const otherParticipants = conv.conversation_participants
+          .filter((p: any) => p.user_id !== userId)
+          .map((p: any) => ({
+            id: p.user_profiles.id,
+            username: p.user_profiles.username || p.user_profiles.handle || '',
+            avatar: p.user_profiles.avatar || p.user_profiles.profile_picture || '',
+            fullName: p.user_profiles.full_name || '',
+          }));
+
+        const latestMessage = conv.messages && conv.messages.length > 0 
+          ? conv.messages.reduce((latest: any, msg: any) => 
+              new Date(msg.created_at) > new Date(latest.created_at) ? msg : latest
+            )
+          : null;
+
+        return {
+          id: conv.id,
+          participants: otherParticipants,
+          lastMessage: latestMessage ? {
+            id: latestMessage.id,
+            senderId: latestMessage.sender_id,
+            receiverId: userId,
+            content: latestMessage.content,
+            type: latestMessage.type || 'text',
+            timestamp: latestMessage.created_at,
+            conversationId: conv.id,
+            isRead: latestMessage.is_read,
+            createdAt: latestMessage.created_at,
+          } : {
+            id: '',
+            senderId: '',
+            receiverId: userId,
+            content: 'No messages yet',
+            type: 'text' as const,
+            timestamp: conv.created_at,
+            conversationId: conv.id,
+            isRead: true,
+            createdAt: conv.created_at,
+          },
+          unreadCount: conv.messages 
+            ? conv.messages.filter((msg: any) => 
+                msg.sender_id !== userId && !msg.is_read
+              ).length 
+            : 0,
+          createdAt: conv.created_at,
+          updatedAt: conv.updated_at,
+        };
+      }) || [];
+
+      debug.dbSuccess('conversations', 'SEARCH', { query, count: conversations.length }, Date.now() - startTime);
+      debugLogger.success('MESSAGE', 'SEARCH_CONVERSATIONS_SUCCESS', `Found ${conversations.length} conversations`, { query });
+      
+      return conversations;
+    } catch (error) {
+      debugLogger.error('MESSAGE', 'SEARCH_CONVERSATIONS_EXCEPTION', 'Exception occurred while searching conversations', error);
+      return [];
+    }
+  },
+
+  // Edit a message
+  async editMessage(messageId: string, newContent: string, userId: string): Promise<boolean> {
+    try {
+      const startTime = Date.now();
+      debug.userAction('Edit message', { messageId, userId });
+      debugLogger.info('MESSAGE', 'EDIT_MESSAGE_START', `Editing message`, { messageId, contentLength: newContent.length });
+
+      const { error } = await supabase
+        .from('messages')
+        .update({ 
+          content: newContent,
+          is_edited: true,
+          edited_at: new Date().toISOString()
+        })
+        .eq('id', messageId)
+        .eq('sender_id', userId); // Only allow editing own messages
+
+      if (error) {
+        debug.dbError('messages', 'UPDATE', error);
+        debugLogger.error('MESSAGE', 'EDIT_MESSAGE_ERROR', 'Failed to edit message', error);
+        return false;
+      }
+
+      debug.dbSuccess('messages', 'UPDATE', { messageId }, Date.now() - startTime);
+      debugLogger.success('MESSAGE', 'EDIT_MESSAGE_SUCCESS', `Message edited successfully`, { messageId });
+      return true;
+    } catch (error) {
+      debugLogger.error('MESSAGE', 'EDIT_MESSAGE_EXCEPTION', 'Exception occurred while editing message', error);
+      return false;
+    }
+  },
+
+  // Delete a message
+  async deleteMessage(messageId: string, userId: string): Promise<boolean> {
+    try {
+      const startTime = Date.now();
+      debug.userAction('Delete message', { messageId, userId });
+      debugLogger.info('MESSAGE', 'DELETE_MESSAGE_START', `Deleting message`, { messageId, userId });
+
+      // First, check if the message exists and belongs to the user
+      const { data: existingMessage, error: fetchError } = await supabase
+        .from('messages')
+        .select('id, sender_id, content, is_deleted')
+        .eq('id', messageId)
+        .single();
+
+      if (fetchError) {
+        console.error('🚨 DELETE_MESSAGE - Fetch error:', fetchError);
+        debugLogger.error('MESSAGE', 'DELETE_MESSAGE_FETCH_ERROR', 'Failed to fetch message for deletion', fetchError);
+        return false;
+      }
+
+      if (!existingMessage) {
+        console.error('🚨 DELETE_MESSAGE - Message not found:', messageId);
+        debugLogger.error('MESSAGE', 'DELETE_MESSAGE_NOT_FOUND', 'Message not found', { messageId });
+        return false;
+      }
+
+      if (existingMessage.sender_id !== userId) {
+        console.error('🚨 DELETE_MESSAGE - Unauthorized:', { messageId, userId, actualSender: existingMessage.sender_id });
+        debugLogger.error('MESSAGE', 'DELETE_MESSAGE_UNAUTHORIZED', 'User not authorized to delete this message', { messageId, userId });
+        return false;
+      }
+
+      if (existingMessage.is_deleted) {
+        console.error('🚨 DELETE_MESSAGE - Already deleted:', messageId);
+        debugLogger.error('MESSAGE', 'DELETE_MESSAGE_ALREADY_DELETED', 'Message already deleted', { messageId });
+        return false;
+      }
+
+      console.log('🔥 DELETE_MESSAGE - About to delete:', { messageId, userId, currentContent: existingMessage.content });
+
+      // Now perform the delete (soft delete)
+      const { data: updateData, error: updateError } = await supabase
+        .from('messages')
+        .update({ 
+          content: 'This message was deleted',
+          is_deleted: true,
+          deleted_at: new Date().toISOString()
+        })
+        .eq('id', messageId)
+        .eq('sender_id', userId)
+        .select();
+
+      if (updateError) {
+        console.error('🚨 DELETE_MESSAGE - Update error:', updateError);
+        debug.dbError('messages', 'UPDATE', updateError);
+        debugLogger.error('MESSAGE', 'DELETE_MESSAGE_ERROR', 'Failed to delete message', updateError);
+        return false;
+      }
+
+      console.log('✅ DELETE_MESSAGE - Update result:', updateData);
+
+      if (!updateData || updateData.length === 0) {
+        console.error('🚨 DELETE_MESSAGE - No rows updated');
+        debugLogger.error('MESSAGE', 'DELETE_MESSAGE_NO_ROWS', 'No rows were updated during deletion', { messageId, userId });
+        return false;
+      }
+
+      debug.dbSuccess('messages', 'UPDATE', { messageId }, Date.now() - startTime);
+      debugLogger.success('MESSAGE', 'DELETE_MESSAGE_SUCCESS', `Message deleted successfully`, { messageId });
+      console.log('🎉 DELETE_MESSAGE - Success:', messageId);
+      return true;
+    } catch (error) {
+      console.error('🚨 DELETE_MESSAGE - Exception:', error);
+      debugLogger.error('MESSAGE', 'DELETE_MESSAGE_EXCEPTION', 'Exception occurred while deleting message', error);
+      return false;
+    }
+  },
+
+  // Mark messages as read
+  async markMessagesAsRead(conversationId: string, userId: string): Promise<boolean> {
+    try {
+      debugLogger.info('MESSAGE', 'MARK_AS_READ_START', `Marking messages as read`, { conversationId, userId });
+
+      const { error } = await supabase
+        .from('messages')
+        .update({ is_read: true })
+        .eq('conversation_id', conversationId)
+        .neq('sender_id', userId) // Mark messages NOT sent by the current user as read
+        .eq('is_read', false);
+
+      if (error) {
+        debugLogger.error('MESSAGE', 'MARK_AS_READ_ERROR', 'Failed to mark messages as read', error);
+        return false;
+      }
+
+      debugLogger.success('MESSAGE', 'MARK_AS_READ_SUCCESS', 'Messages marked as read successfully');
+      return true;
+    } catch (error) {
+      debugLogger.error('MESSAGE', 'MARK_AS_READ_EXCEPTION', 'Exception occurred while marking messages as read', error);
+      return false;
+    }
+  },
+};
+
+// =====================================================
+// BULLETIN BOARD SERVICE
+// =====================================================
+
+const bulletinService = {
+  // Get bulletin board notes for a user
+  async getBulletinNotes(userId: string): Promise<BulletinNote[]> {
+    try {
+      debug.dbQuery('bulletin', 'SELECT', { userId });
+      
+      const { data, error } = await supabase
+        .from('bulletin_board')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        debug.dbError('bulletin', 'SELECT', { error: error.message });
+        return [];
+      }
+
+      return data.map(note => ({
+        id: note.id,
+        userId: note.user_id,
+        title: note.title,
+        description: note.description,
+        imageUrl: note.image_url,
+        thumbnailUrl: note.thumbnail_url,
+        noteType: note.note_type,
+        amount: note.amount,
+        createdAt: note.created_at,
+        updatedAt: note.updated_at,
+      }));
+    } catch (error) {
+      debug.dbError('bulletin', 'SELECT', { error: (error as Error).message });
+      return [];
+    }
+  },
+
+  // Create a new bulletin board note
+  async createBulletinNote(
+    userId: string,
+    title: string,
+    description: string,
+    imageUrl: string,
+    thumbnailUrl: string,
+    noteType: 'sticky' | 'currency',
+    amount?: number
+  ): Promise<BulletinNote | null> {
+    try {
+      debug.dbQuery('bulletin', 'INSERT', { userId, title, noteType });
+      
+      const { data, error } = await supabase
+        .from('bulletin_board')
+        .insert({
+          user_id: userId,
+          title,
+          description,
+          image_url: imageUrl,
+          thumbnail_url: thumbnailUrl,
+          note_type: noteType,
+          amount: noteType === 'currency' ? amount : null,
+        })
+        .select()
+        .single();
+
+      if (error) {
+        debug.dbError('bulletin', 'INSERT', { error: error.message });
+        return null;
+      }
+
+      return {
+        id: data.id,
+        userId: data.user_id,
+        title: data.title,
+        description: data.description,
+        imageUrl: data.image_url,
+        thumbnailUrl: data.thumbnail_url,
+        noteType: data.note_type,
+        amount: data.amount,
+        createdAt: data.created_at,
+        updatedAt: data.updated_at,
+      };
+    } catch (error) {
+      debug.dbError('bulletin', 'INSERT', { error: (error as Error).message });
+      return null;
+    }
+  },
+
+  // Update a bulletin board note
+  async updateBulletinNote(
+    noteId: string,
+    updates: Partial<Pick<BulletinNote, 'title' | 'description' | 'imageUrl' | 'thumbnailUrl' | 'amount'>>
+  ): Promise<BulletinNote | null> {
+    try {
+      debug.dbQuery('bulletin', 'UPDATE', { noteId, updates });
+      
+      const updateData: any = {};
+      if (updates.title !== undefined) updateData.title = updates.title;
+      if (updates.description !== undefined) updateData.description = updates.description;
+      if (updates.imageUrl !== undefined) updateData.image_url = updates.imageUrl;
+      if (updates.thumbnailUrl !== undefined) updateData.thumbnail_url = updates.thumbnailUrl;
+      if (updates.amount !== undefined) updateData.amount = updates.amount;
+
+      const { data, error } = await supabase
+        .from('bulletin_board')
+        .update(updateData)
+        .eq('id', noteId)
+        .select()
+        .single();
+
+      if (error) {
+        debug.dbError('bulletin', 'UPDATE', { error: error.message });
+        return null;
+      }
+
+      return {
+        id: data.id,
+        userId: data.user_id,
+        title: data.title,
+        description: data.description,
+        imageUrl: data.image_url,
+        thumbnailUrl: data.thumbnail_url,
+        noteType: data.note_type,
+        amount: data.amount,
+        createdAt: data.created_at,
+        updatedAt: data.updated_at,
+      };
+    } catch (error) {
+      debug.dbError('bulletin', 'UPDATE', { error: (error as Error).message });
+      return null;
+    }
+  },
+
+  // Delete a bulletin board note
+  async deleteBulletinNote(noteId: string): Promise<boolean> {
+    try {
+      debug.dbQuery('bulletin', 'DELETE', { noteId });
+      
+      const { error } = await supabase
+        .from('bulletin_board')
+        .delete()
+        .eq('id', noteId);
+
+      if (error) {
+        debug.dbError('bulletin', 'DELETE', { error: error.message });
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      debug.dbError('bulletin', 'DELETE', { error: (error as Error).message });
+      return false;
+    }
+  },
+
+  // Get bulletin board note count by type
+  async getBulletinNoteCountByType(userId: string, noteType: 'sticky' | 'currency'): Promise<number> {
+    try {
+      debug.dbQuery('bulletin', 'COUNT', { userId, noteType });
+      
+      const { count, error } = await supabase
+        .from('bulletin_board')
+        .select('id', { count: 'exact' })
+        .eq('user_id', userId)
+        .eq('note_type', noteType);
+
+      if (error) {
+        debug.dbError('bulletin', 'COUNT', { error: error.message });
+        return 0;
+      }
+
+      return count || 0;
+    } catch (error) {
+      debug.dbError('bulletin', 'COUNT', { error: (error as Error).message });
+      return 0;
+    }
+  },
+};
+
+// =====================================================
 // EXPORT ALL SERVICES
 // =====================================================
 
@@ -2129,4 +4430,6 @@ export const dataService = {
   review: reviewService,
   storage: storageService,
   comment: commentService,
+  message: messageService,
+  bulletin: bulletinService,
 }; 

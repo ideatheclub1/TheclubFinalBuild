@@ -125,6 +125,11 @@ class DebugLogger {
 // Create singleton instance
 export const debugLogger = new DebugLogger();
 
+// Test console output on initialization
+console.log('🚀 DEBUG LOGGER INITIALIZED - If you see this, console.log is working!');
+console.log('📍 Debug logger enabled:', debugLogger['isEnabled']);
+console.log('📊 Current time:', new Date().toLocaleTimeString());
+
 // Convenience functions for common operations
 export const debug = {
   // Page navigation
@@ -167,6 +172,27 @@ export const debug = {
     debugLogger.info('USER', action, `User performed action: ${action}`, details);
   },
 
+  // Cache operations
+  cacheHit: (type: string, operation: string, details?: any) => {
+    debugLogger.success('CACHE', `HIT_${type}_${operation}`, `Cache hit for ${type}`, details);
+  },
+
+  cacheMiss: (type: string, operation: string, details?: any) => {
+    debugLogger.info('CACHE', `MISS_${type}_${operation}`, `Cache miss for ${type} - fetching fresh data`, details);
+  },
+
+  cacheSet: (type: string, key: string, size?: number) => {
+    debugLogger.info('CACHE', `SET_${type}`, `Cached ${type} data: ${key}`, { size });
+  },
+
+  cacheEvict: (type: string, key: string, reason?: string) => {
+    debugLogger.info('CACHE', `EVICT_${type}`, `Evicted ${type} from cache: ${key}`, { reason });
+  },
+
+  cacheError: (type: string, operation: string, error: any) => {
+    debugLogger.error('CACHE', `ERROR_${type}_${operation}`, `Cache operation failed for ${type}`, error);
+  },
+
   // State changes
   stateChange: (component: string, stateName: string, oldValue: any, newValue: any) => {
     debugLogger.info('STATE', `${component}_${stateName}`, `State changed in ${component}`, { oldValue, newValue });
@@ -206,6 +232,19 @@ export const debug = {
   authError: (action: string, error: any) => {
     debugLogger.error('AUTH', action, `Authentication error: ${action}`, error);
   },
+
+  // Test function - call this to verify debug logger is working
+  test: () => {
+    console.log('🧪 DIRECT CONSOLE.LOG TEST - You should see this immediately!');
+    debugLogger.info('TEST', 'MANUAL', 'Testing debug logger - INFO level');
+    debugLogger.warn('TEST', 'MANUAL', 'Testing debug logger - WARN level');
+    debugLogger.error('TEST', 'MANUAL', 'Testing debug logger - ERROR level');
+    debugLogger.success('TEST', 'MANUAL', 'Testing debug logger - SUCCESS level');
+    debugLogger.process('TEST', 'MANUAL', 'Testing debug logger - PROCESS level');
+    console.log('🎯 If you see colored logs above, debug logger is working!');
+    console.log('📋 Total logs stored:', debugLogger.getLogs().length);
+    return 'Debug test completed - check console output above';
+  },
 };
 
 // React Hook for debugging component lifecycle
@@ -217,9 +256,13 @@ export const useDebugLogger = (componentName: string) => {
     };
   }, [componentName]);
 
+  // Return an object that has the same interface as debugLogger but scoped to component
   return {
-    log: (action: string, message: string, data?: any) => {
+    info: (action: string, message: string, data?: any) => {
       debugLogger.info(componentName, action, message, data);
+    },
+    warn: (action: string, message: string, data?: any) => {
+      debugLogger.warn(componentName, action, message, data);
     },
     error: (action: string, message: string, data?: any) => {
       debugLogger.error(componentName, action, message, data);
@@ -230,5 +273,12 @@ export const useDebugLogger = (componentName: string) => {
     process: (action: string, message: string, data?: any) => {
       debugLogger.process(componentName, action, message, data);
     },
+    // Legacy aliases for backwards compatibility
+    log: (action: string, message: string, data?: any) => {
+      debugLogger.info(componentName, action, message, data);
+    },
   };
-}; 
+};
+
+// Add default export to fix import issues
+export default debugLogger; 
